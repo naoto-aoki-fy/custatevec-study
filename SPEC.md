@@ -35,8 +35,9 @@ Use the classic cuStateVec API for the baseline implementation, with explicit ga
 
 ## Measurement initial states
 
-`--initial-state uniform|zero|ghz` applies only to `--job measure`, with
-`uniform` as the default when omitted. Reject invalid values and explicit use
+`--initial-state uniform|flat|zero|ghz` applies only to `--job measure`, with
+`uniform` as the default when omitted. `flat` is an alias normalized to `uniform`,
+including in the reported state. Reject invalid values and explicit use
 with any other job or check mode. Report the selected state as
 `initial_state=<value>` to stderr without adding CSV columns.
 

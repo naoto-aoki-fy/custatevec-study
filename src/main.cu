@@ -46,9 +46,9 @@ Options parse_options(int argc, char** argv) {
         }
         if (key == "--initial-state") {
             initial_state_selected = true;
-            o.initial_state = value;
-            if (value != "uniform" && value != "zero" && value != "ghz")
-                throw std::runtime_error("--initial-state must be uniform, zero, or ghz");
+            o.initial_state = value == "flat" ? "uniform" : value;
+            if (o.initial_state != "uniform" && o.initial_state != "zero" && o.initial_state != "ghz")
+                throw std::runtime_error("--initial-state must be uniform (alias flat), zero, or ghz");
             continue;
         }
         if (key == "--communicator") { o.communicator = value; continue; }
@@ -97,7 +97,7 @@ void print_help() {
               << "  --nqubits N       default 31; checks default max(8,log2(ranks)+1), cap 20\n"
               << "  --repeats R       measured repetitions (default 128)\n"
               << "  --warmup W        separate warm-ups (default 0)\n"
-              << "  --initial-state uniform|zero|ghz  --job measure only (default uniform)\n"
+              << "  --initial-state uniform|flat|zero|ghz  --job measure only (default uniform; flat aliases uniform)\n"
               << "  --seed S          reproducible uint64 seed (default 1)\n"
               << "  --communicator auto|openmpi|mpich|external\n"
               << "  --communicator-library PATH  MPI library or external communicator plugin\n"

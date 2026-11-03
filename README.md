@@ -335,8 +335,9 @@ by execution.
 
 ## Full-register measurement workload (Stage 3)
 
-`--job measure --initial-state uniform|zero|ghz` selects the input state;
-`uniform` is the default. Explicit `--initial-state` is rejected for Hadamard
+`--job measure --initial-state uniform|flat|zero|ghz` selects the input state;
+`uniform` is the default. `flat` is an alias for `uniform` and is reported as
+`initial_state=uniform`. Explicit `--initial-state` is rejected for Hadamard
 and all check modes, including `--check-measure`, which checks all three states.
 Invalid values are rejected.
 
