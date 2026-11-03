@@ -56,6 +56,7 @@ double measurement_draw(std::uint64_t seed, std::uint64_t repetition) {
 
 class MeasurementJob final : public Job {
 public:
+    explicit MeasurementJob(const std::string& initial_state = "uniform") : initial_state_(initial_state) {}
     void prepare(Runtime& runtime) override {
         ordering_.resize(runtime.topology.local_bits);
         bits_.resize(runtime.topology.local_bits);
@@ -64,11 +65,15 @@ public:
         runtime.reserve_measurement_workspace();
         if (runtime.topology.rank == 0)
             std::cerr << "measurement=joint-full-register rank_selection=measured-FP64-masses"
+                      << " initial_state=" << initial_state_
                       << " rng=SplitMix64-counter-53-bits host_mass_buffer_bytes="
                       << checked_multiply(masses_.size(), sizeof(double)) << '\n';
     }
     void initialize(Runtime& runtime, std::uint64_t, std::uint64_t) override {
-        runtime.initialize_uniform();
+        if (initial_state_ == "uniform") runtime.initialize_uniform();
+        else if (initial_state_ == "zero") runtime.initialize_zero();
+        else if (initial_state_ == "ghz") runtime.initialize_ghz();
+        else fail("Unknown measurement initial state: " + initial_state_);
     }
     JobResult execute(Runtime& runtime, std::uint64_t seed, std::uint64_t repetition) override {
         return measure(runtime, measurement_draw(seed, repetition));
@@ -150,6 +155,7 @@ public:
         return {logical, true};
     }
 private:
+    std::string initial_state_;
     std::vector<int32_t> ordering_, bits_;
     std::vector<double> masses_;
 };
@@ -199,9 +205,9 @@ void compare_logical_state(Runtime& runtime, const std::vector<cuDoubleComplex>&
 }
 }
 
-std::unique_ptr<Job> make_job(const std::string& name) {
+std::unique_ptr<Job> make_job(const std::string& name, const std::string& initial_state) {
     if (name == "hadamard") return std::make_unique<HadamardJob>();
-    if (name == "measure") return std::make_unique<MeasurementJob>();
+    if (name == "measure") return std::make_unique<MeasurementJob>(initial_state);
     throw std::runtime_error("Job '" + name + "' is not implemented; no timings produced");
 }
 
@@ -270,7 +276,9 @@ void check_measure(Runtime& runtime) {
     std::vector<cuDoubleComplex> input(count), actual(runtime.local_elements);
     const std::vector<double> draws = {0.0, 0.125, 0.25, 0.5, 0.75, std::nextafter(1.0, 0.0)};
     const auto abs2 = [](cuDoubleComplex a) { return a.x * a.x + a.y * a.y; };
-    const auto check = [&](const std::string& label, bool direct_uniform) {
+    const auto check = [&](const std::string& label, const std::string& initial_state) {
+        MeasurementJob initializer(initial_state);
+        const bool direct = !initial_state.empty();
         double total = 0.0;
         for (const auto a : input) total += abs2(a);
         for (const double controlled_draw : draws) {
@@ -278,20 +286,25 @@ void check_measure(Runtime& runtime) {
             // their interior probes away from CDF boundaries so CPU sequential
             // sums and GPU tree sums need not round identically. The exact
             // sparse fixture below exercises boundaries without this ambiguity.
-            const double draw = direct_uniform && controlled_draw > 0.0 && controlled_draw < 0.9
+            const double draw = initial_state == "uniform" && controlled_draw > 0.0 && controlled_draw < 0.9
                 ? controlled_draw + 0.0314159265358979 : controlled_draw;
             runtime.reset_mapping();
-            if (direct_uniform) job.initialize(runtime, 0, 0);
+            if (direct) initializer.initialize(runtime, 0, 0);
             else CUDA_TRY(cudaMemcpyAsync(runtime.state, input.data() + base, runtime.state_bytes,
                                           cudaMemcpyHostToDevice, runtime.stream));
             runtime.synchronize();
-            if (direct_uniform) {
+            if (direct) {
                 CUDA_TRY(cudaMemcpy(actual.data(), runtime.state, runtime.state_bytes, cudaMemcpyDeviceToHost));
                 int bad = 0, any_bad = 0;
-                for (std::size_t i = 0; i < actual.size(); ++i)
+                double norm = 0.0, global_norm = 0.0;
+                for (std::size_t i = 0; i < actual.size(); ++i) {
                     if (actual[i].x != input[base + i].x || actual[i].y != 0.0) bad = 1;
+                    norm += abs2(actual[i]);
+                }
+                MPI_TRY(MPI_Allreduce(&norm, &global_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
+                if (!std::isfinite(global_norm) || std::abs(global_norm - 1.0) > 1e-11) bad = 1;
                 MPI_TRY(MPI_Allreduce(&bad, &any_bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
-                if (any_bad) fail("Measurement check: direct global uniform initialization mismatch");
+                if (any_bad) fail("Measurement check: direct initialization or normalization mismatch: " + label);
             }
             // Independent CPU cumulative reference over the full small fixture.
             const double target = std::min(draw * total, std::nextafter(total, 0.0));
@@ -340,7 +353,7 @@ void check_measure(Runtime& runtime) {
         std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
         input[static_cast<std::uint64_t>(owner) * runtime.local_elements + runtime.local_elements - 1] =
             make_cuDoubleComplex(0.0, -2.0);
-        check("basis on rank " + std::to_string(owner), false);
+        check("basis on rank " + std::to_string(owner), "");
     }
     for (int sparse = 0; sparse < 2; ++sparse) {
         std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
@@ -352,7 +365,7 @@ void check_measure(Runtime& runtime) {
             input[offset] = make_cuDoubleComplex(-weight, 0.0);
             input[offset + runtime.local_elements - 1] = make_cuDoubleComplex(0.0, 2.0 * weight);
         }
-        check(sparse ? "unequal masses and zero-probability ranks" : "unequal rank and local masses", false);
+        check(sparse ? "unequal masses and zero-probability ranks" : "unequal rank and local masses", "");
     }
     // Equal exact masses give controlled draws precisely on rank and local
     // interval boundaries, with zero-probability gaps between the two entries.
@@ -362,10 +375,17 @@ void check_measure(Runtime& runtime) {
         input[offset] = make_cuDoubleComplex(1.0, 0.0);
         input[offset + runtime.local_elements - 1] = make_cuDoubleComplex(0.0, -1.0);
     }
-    check("exact interval boundaries with local zero-probability gaps", false);
+    check("exact interval boundaries with local zero-probability gaps", "");
     const double uniform = std::exp2(-0.5 * runtime.nqubits);
     std::fill(input.begin(), input.end(), make_cuDoubleComplex(uniform, 0.0));
-    check("independently GPU-initialized globally normalized uniform state", true);
+    check("independently GPU-initialized globally normalized uniform state", "uniform");
+    std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+    input.front() = make_cuDoubleComplex(1.0, 0.0);
+    check("independently GPU-initialized zero state", "zero");
+    input.front() = input.back() = make_cuDoubleComplex(h_scale, 0.0);
+    // Draws on both sides of 0.5 exercise both GHZ endpoints at P=1 and
+    // on the first/last ranks at P>1, including zero-mass intermediate ranks.
+    check("independently GPU-initialized GHZ state, both outcomes", "ghz");
 }
 
 void run_benchmark(Runtime& runtime, Job& job, const Options& options) {

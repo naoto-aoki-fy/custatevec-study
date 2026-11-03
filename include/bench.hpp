@@ -27,6 +27,7 @@ void sv_check(custatevecStatus_t status, const char* expression);
 
 struct Options {
     std::string job;
+    std::string initial_state = "uniform";
     int nqubits = 31;
     int repeats = 128;
     int warmup = 0;
@@ -70,6 +71,7 @@ public:
     void synchronize();
     void initialize_zero();
     void initialize_uniform();
+    void initialize_ghz();
     void reset_mapping();
     void reserve_gate_workspace(const cuDoubleComplex* matrix, int targets);
     void reserve_measurement_workspace();
@@ -126,7 +128,7 @@ public:
     // also enforced by the harness. Format the result only after the timer stops.
     virtual JobResult execute(Runtime&, std::uint64_t seed, std::uint64_t repetition) = 0;
 };
-std::unique_ptr<Job> make_job(const std::string& name);
+std::unique_ptr<Job> make_job(const std::string& name, const std::string& initial_state = "uniform");
 void check_hadamard(Runtime& runtime);
 void check_measure(Runtime& runtime);
 void run_benchmark(Runtime& runtime, Job& job, const Options& options);

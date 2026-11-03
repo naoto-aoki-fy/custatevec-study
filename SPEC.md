@@ -16,7 +16,7 @@ The separate, untimed `--smoke-check` is capped at 20 total qubits and defaults 
 The finished program must provide two independently executable jobs:
 
 - `--job hadamard`: initialize an N-qubit state to |0>^N and apply one Hadamard gate to every logical qubit.
-- `--job measure`: directly initialize a normalized uniform N-qubit state and perform one joint computational-basis measurement of the complete register, including state collapse.
+- `--job measure`: directly initialize the selected normalized N-qubit state (uniform by default) and perform one joint computational-basis measurement of the complete register, including state collapse.
 
 Each invocation runs exactly one job. The jobs must be usable as separate MPI launches and separate scheduler jobs.
 
@@ -32,6 +32,43 @@ Allow smaller qubit counts and fewer repetitions for correctness tests. Provide 
 Use complex128 state-vector storage (`CUDA_C_64F`), complex128 gate matrices, and `CUSTATEVEC_COMPUTE_64F` wherever a compute type is required. Probability calculations and their MPI reductions must use double precision.
 
 Use the classic cuStateVec API for the baseline implementation, with explicit gate applications and distributed index-bit swaps.
+
+## Measurement initial states
+
+`--initial-state uniform|zero|ghz` applies only to `--job measure`, with
+`uniform` as the default when omitted. Reject invalid values and explicit use
+with any other job or check mode. Report the selected state as
+`initial_state=<value>` to stderr without adding CSV columns.
+
+Initialize directly on the GPU in the canonical distributed layout before
+every warm-up and measured repetition, using complex128 and no preparation gates:
+
+- `uniform`: every global amplitude is `2^(-N/2)`.
+- `zero`: only global index 0 has amplitude 1.
+- `ghz`: only global indices 0 and `2^N - 1` have amplitude `1/sqrt(2)`.
+
+All other amplitudes are zero. For P>1, the GHZ endpoints belong to ranks 0
+and P-1; for P=1, both are local. Normalize the complete distributed state,
+not each rank independently. Complete initialization outside timing. Preserve
+measurement, collapse, RNG, warm-up seed domains, CSV, and Hadamard behavior.
+
+Examples (target-environment commands, not execution results):
+
+```sh
+mpiexec -n 1 ./custatevec_bench --job measure --initial-state zero --nqubits 8 --repeats 4
+mpiexec -n 2 ./custatevec_bench --job measure --initial-state ghz --nqubits 8 --warmup 2 --repeats 4
+mpiexec -n 2 ./custatevec_bench --job measure --initial-state uniform --nqubits 8 --repeats 4
+```
+
+`--check-measure` must exercise all three direct GPU initializers independently
+before each controlled draw. Check each rank's complete initial slice and the
+global unit norm, compare outcomes with the CPU reference and across ranks,
+and check the complete collapsed state and its global unit norm. Zero must
+always yield all zeros. Controlled draws below and above 0.5 must exercise
+both all-zero and all-one GHZ outcomes deterministically. Run this mode with
+P=1, P=2, and P=4 (for example N=8,8,3 respectively), including zero-mass
+intermediate ranks at P=4. Builds, tests, and validation for this change were
+skipped at the user's request; CUDA/MPI execution remains unverified.
 
 ## Build system
 

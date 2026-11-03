@@ -335,9 +335,32 @@ by execution.
 
 ## Full-register measurement workload (Stage 3)
 
-Before each repetition, a GPU kernel writes every local amplitude as
-`exp2(-N/2) + 0i`, using the same global N on every rank. No gates prepare this
-state. Initialization, device completion, and the start barrier precede timing.
+`--job measure --initial-state uniform|zero|ghz` selects the input state;
+`uniform` is the default. Explicit `--initial-state` is rejected for Hadamard
+and all check modes, including `--check-measure`, which checks all three states.
+Invalid values are rejected.
+
+Before every warm-up and measured repetition, a GPU kernel directly writes the
+selected state in complex128, without applying gates:
+
+| Initial state | Nonzero amplitudes at global indices | Possible outcomes |
+| --- | --- | --- |
+| `uniform` | Every amplitude is `exp2(-N/2) + 0i` | Any N-bit string |
+| `zero` | Index 0 has amplitude 1 | All zeros |
+| `ghz` | Indices 0 and `2^N - 1` have amplitude `1/sqrt(2)` | All zeros or all ones |
+
+All other amplitudes are zero. Initialization follows the contiguous rank
+layout: index 0 belongs to rank 0, and the last index belongs to rank P-1
+(both belong to rank 0 for P=1). The global squared norm is 1. Initialization,
+device completion, and the start barrier precede timing. Rank 0 reports
+`initial_state=<value>` to stderr; the CSV schema is unchanged.
+
+```sh
+mpiexec -n 1 ./custatevec_bench --job measure --initial-state zero --nqubits 8 --repeats 4
+mpiexec -n 2 ./custatevec_bench --job measure --initial-state ghz --nqubits 8 --warmup 2 --repeats 4
+mpiexec -n 2 ./custatevec_bench --job measure --initial-state uniform --nqubits 8 --repeats 4
+```
+
 Defaults remain 128 independently initialized, separately timed measurements,
 zero warm-ups, and complex128 storage with double probability calculations.
 
@@ -386,7 +409,13 @@ This separate mode defaults to max(8, log2(P)+1) qubits, caps N at 20, and emits
 no benchmark CSV. Controlled draws include zero, exact interval boundaries,
 and the largest double below one. An independent CPU cumulative reference
 checks basis states on low/middle/high ranks, unequal rank and local masses,
-zero-probability ranks, local probability gaps, and GPU uniform initialization.
+zero-probability ranks, local probability gaps, and all three GPU initialization
+methods. Each initialization is compared amplitude by amplitude across ranks,
+and its global norm is reduced before measurement. The zero state must always
+produce all zeros; controlled draws below and above 0.5 deterministically
+exercise both GHZ outcomes. Each draw starts with fresh GPU initialization,
+including after a collapsed state. The commands above cover P=1, P=2, and P=4;
+at P=4 the GHZ case also exercises intermediate ranks with zero mass.
 Fixtures include nonunit norms and complex phases. Every collapse checks the
 complete local state on each rank, exactly one surviving global amplitude,
 retained phase, global unit norm, and outcome agreement across all ranks.
@@ -462,10 +491,12 @@ start equal each repetition; Hadamard localization updates both owners in the
 mapping. No physical restoration is required. Measurement uses the complete
 physical outcome and translates it to logical order before reporting it.
 
-Measurement initialization uses amplitude `2^(-N/2)` on every rank, giving
-global squared norm 1 and local squared norm 1/P, subject to FP64 rounding.
-It does not normalize each sub-state-vector to 1. The measured path recomputes
-the actual masses rather than assuming these analytic values.
+The default uniform measurement initialization uses amplitude `2^(-N/2)` on
+every rank, giving global squared norm 1 and local squared norm 1/P, subject to
+FP64 rounding. The zero state has mass 1 on rank 0. The GHZ state has mass 1/2
+on ranks 0 and P-1 for P>1, or mass 1 on rank 0 for P=1. Other ranks have zero
+mass. Sub-state-vectors are never normalized independently. The measured path
+recomputes actual masses for every selected initial state.
 
 | CSV column | Meaning |
 | --- | --- |
@@ -750,3 +781,10 @@ MPI_MAX CSV rows and correlate with final sizes/retries in metadata. Report
 observations without assuming auto wins or P=4 must beat P=1. Placement differs
 in rank count when comparing P values; hold the rank-to-GPU placement rule and
 GPU type fixed, and keep placement identical within each four-case comparison.
+
+
+The configurable measurement initial-state change skipped tests, builds, and
+validation at the user's request. The extended `--check-measure` cases above
+have not been run. Compilation and single-rank/multi-rank CUDA/MPI execution
+remain deferred to the target environment; no toolchain availability was
+rechecked for this change.

@@ -83,10 +83,11 @@ void Topology::close() { MPI_TRY(MPI_Comm_free(&shared)); }
 
 namespace {
 __global__ void initialize_kernel(cuDoubleComplex* state, std::uint64_t count,
-                                  bool uniform, bool first_rank, double amplitude) {
+                                  bool uniform, bool first_rank, bool last_rank, double amplitude) {
     for (std::uint64_t i = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
          i < count; i += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
-        state[i] = make_cuDoubleComplex(uniform ? amplitude : ((first_rank && i == 0) ? 1.0 : 0.0), 0.0);
+        const bool endpoint = (first_rank && i == 0) || (last_rank && i == count - 1);
+        state[i] = make_cuDoubleComplex((uniform || endpoint) ? amplitude : 0.0, 0.0);
     }
 }
 unsigned blocks(std::uint64_t count) {
@@ -441,12 +442,18 @@ void Runtime::reset_mapping() {
     std::iota(logical_to_physical.begin(), logical_to_physical.end(), 0);
 }
 void Runtime::initialize_zero() {
-    initialize_kernel<<<blocks(local_elements), 256, 0, stream>>>(state, local_elements, false, topology.rank == 0, 0.0);
+    initialize_kernel<<<blocks(local_elements), 256, 0, stream>>>(state, local_elements, false, topology.rank == 0, false, 1.0);
     CUDA_TRY(cudaGetLastError());
 }
 void Runtime::initialize_uniform() {
     const double amplitude = std::exp2(-0.5 * static_cast<double>(nqubits));
-    initialize_kernel<<<blocks(local_elements), 256, 0, stream>>>(state, local_elements, true, false, amplitude);
+    initialize_kernel<<<blocks(local_elements), 256, 0, stream>>>(state, local_elements, true, false, false, amplitude);
+    CUDA_TRY(cudaGetLastError());
+}
+void Runtime::initialize_ghz() {
+    const double amplitude = 1.0 / std::sqrt(2.0);
+    initialize_kernel<<<blocks(local_elements), 256, 0, stream>>>(state, local_elements,
+        false, topology.rank == 0, topology.rank == topology.ranks - 1, amplitude);
     CUDA_TRY(cudaGetLastError());
 }
 void Runtime::reserve_gate_workspace(const cuDoubleComplex* matrix, int targets) {

@@ -23,6 +23,7 @@ std::uint64_t number(const std::string& text, const std::string& option) {
 Options parse_options(int argc, char** argv) {
     Options o;
     bool job_selected = false;
+    bool initial_state_selected = false;
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         if (key == "--help") { o.help = true; continue; }
@@ -32,7 +33,8 @@ Options parse_options(int argc, char** argv) {
         if (key != "--job" && key != "--nqubits" && key != "--repeats" &&
             key != "--warmup" && key != "--seed" && key != "--communicator" &&
             key != "--communicator-library" && key != "--p2p" &&
-            key != "--transfer-buffer" && key != "--transfer-buffer-fraction")
+            key != "--transfer-buffer" && key != "--transfer-buffer-fraction" &&
+            key != "--initial-state")
             throw std::runtime_error("Unknown option: " + key);
         if (++i == argc) throw std::runtime_error("Missing value for " + key);
         const std::string value = argv[i];
@@ -40,6 +42,13 @@ Options parse_options(int argc, char** argv) {
             if (job_selected) throw std::runtime_error("Select --job exactly once");
             job_selected = true;
             o.job = value;
+            continue;
+        }
+        if (key == "--initial-state") {
+            initial_state_selected = true;
+            o.initial_state = value;
+            if (value != "uniform" && value != "zero" && value != "ghz")
+                throw std::runtime_error("--initial-state must be uniform, zero, or ghz");
             continue;
         }
         if (key == "--communicator") { o.communicator = value; continue; }
@@ -63,6 +72,8 @@ Options parse_options(int argc, char** argv) {
     }
     if (o.transfer_buffer != "auto" && o.transfer_buffer != "min")
         throw std::runtime_error("--transfer-buffer must be auto or min");
+    if (initial_state_selected && (o.job != "measure" || o.smoke || o.check_hadamard || o.check_measure))
+        throw std::runtime_error("--initial-state is only valid with --job measure, not check modes");
     if (o.help) return o;
     if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) + static_cast<int>(o.check_measure) +
         static_cast<int>(!o.job.empty()) != 1)
@@ -86,6 +97,7 @@ void print_help() {
               << "  --nqubits N       default 31; checks default max(8,log2(ranks)+1), cap 20\n"
               << "  --repeats R       measured repetitions (default 128)\n"
               << "  --warmup W        separate warm-ups (default 0)\n"
+              << "  --initial-state uniform|zero|ghz  --job measure only (default uniform)\n"
               << "  --seed S          reproducible uint64 seed (default 1)\n"
               << "  --communicator auto|openmpi|mpich|external\n"
               << "  --communicator-library PATH  MPI library or external communicator plugin\n"
@@ -131,7 +143,7 @@ int main(int argc, char** argv) {
                 bench::fail("Untimed checks are limited to 20 total qubits; use a smaller MPI launch/state");
             bench::Topology topology(options.nqubits);
             // Reject placeholders before allocating a production-size state or emitting CSV.
-            auto job = checking ? nullptr : bench::make_job(options.job);
+            auto job = checking ? nullptr : bench::make_job(options.job, options.initial_state);
             bench::Runtime runtime(options, topology, assignment);
             if (options.smoke) runtime.smoke_check();
             else if (options.check_hadamard) bench::check_hadamard(runtime);
