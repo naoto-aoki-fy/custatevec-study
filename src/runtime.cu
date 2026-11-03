@@ -237,6 +237,11 @@ void Runtime::swap_local_global(int local_bit, int global_bit) {
     if (!worker_ || local_bit < 0 || local_bit >= topology.local_bits ||
         global_bit < topology.local_bits || global_bit >= nqubits)
         fail("swap_local_global requires valid local and global physical bit positions");
+    // The handle and worker share this stream. Finish preceding gates before
+    // entering the MPI transfer path; the synchronization below completes the
+    // swap before the next gate can consume the localized state. Both waits
+    // belong to the timed operation when invoked by a workload.
+    CUDA_TRY(cudaStreamSynchronize(stream));
     const int2 pair = make_int2(local_bit, global_bit);
     uint32_t batches = 0;
     SV_TRY(custatevecDistIndexBitSwapSchedulerSetIndexBitSwaps(handle, scheduler_, &pair, 1,

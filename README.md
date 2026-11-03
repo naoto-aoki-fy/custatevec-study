@@ -1,8 +1,8 @@
 # Distributed cuStateVec benchmark
 
-Stage 1 provides a C++17/CUDA/MPI runtime, a reusable benchmark timing harness,
-and an untimed small-state smoke check. `hadamard` and `measure` are explicit
-placeholders for stages 2 and 3: both exit unsuccessfully without CSV output.
+Stages 1 and 2 provide a C++17/CUDA/MPI runtime, a reusable benchmark timing
+harness, the Hadamard benchmark, and opt-in untimed small-state checks.
+`measure` remains a Stage 3 placeholder and exits unsuccessfully without CSV output.
 The common contract is recorded in [SPEC.md](SPEC.md).
 
 ## Build prerequisites
@@ -115,18 +115,18 @@ and no gate fusion. Options accept unsigned decimal integers; seed accepts the
 full uint64 range. N is restricted to 1..62 for signed 64-bit cuStateVec indices,
 with separate checked byte arithmetic and actual GPU-capacity checks.
 
-The eventual jobs run independently, including as separate scheduler jobs:
+Jobs run independently, including as separate scheduler jobs:
 
 ```sh
 mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 31 --repeats 128 --warmup 0 --seed 1
 mpiexec -n 2 ./custatevec_bench --job measure --nqubits 31 --repeats 128 --warmup 0 --seed 1
 ```
 
-**Both commands fail explicitly in Stage 1**, before allocating the large state.
-They cannot be used to obtain measurements yet.
+The Hadamard command is implemented. The measurement command still fails
+explicitly before allocating the large state and produces no CSV.
 
-Implement `Job` in `include/bench.hpp` and connect it through `make_job` in
-`src/benchmark.cu`. `prepare` allocates reusable workspaces/descriptors;
+Workloads implement `Job` in `include/bench.hpp` and are connected through
+`make_job` in `src/benchmark.cu`. `prepare` allocates reusable workspaces/descriptors;
 `initialize` independently initializes each repetition; `execute` performs the
 whole operation and completes its MPI requests. The harness resets mapping,
 completes initialization, barriers, times with local MPI_Wtime, synchronizes the
@@ -148,6 +148,65 @@ and handle creation, then query and account for communication and operation
 workspaces outside repetitions. The sum of explicit buffers excludes internal
 CUDA/MPI/library allocations, which reduce the free memory reported by CUDA.
 
+## Hadamard workload (Stage 2)
+
+Each repetition fully reinitializes the distributed state to |0> and resets the
+logical-to-physical mapping to identity before timing. It applies H to logical
+qubits q=0,1,...,N-1 using exactly N separate `custatevecApplyMatrix` calls on
+every rank (31 at the production default). The explicit row-major matrix is
+`(1/sqrt(2)) * [[1,1],[1,-1]]`, stored as complex128 and applied with FP64
+computation, one target, and no controls. Gates are never fused; initialization
+is not used as a substitute for the gate sequence.
+
+When a logical target occupies a global physical bit, the deterministic policy
+swaps that bit with **physical bit 0** using the distributed scheduler and swap
+worker. Both affected logical owners' positions are updated. This remains valid
+when bit 0 holds a logical qubit whose gate has already executed. The next gate
+uses its target's current position. The final mapping is retained without a
+restoration swap. All ranks follow the same schedule, including when only one
+local bit is available.
+
+The handle's gate stream and the worker's transfer stream are the same explicit
+CUDA stream. The runtime synchronizes it before entering the swap transfer path
+to finish preceding gates and after the worker's batches to finish transfers
+before subsequent gates. These waits, swaps, communication, gates, and the
+harness's final device synchronization are inside the timed interval. Gate
+workspace is queried and allocated by `prepare`, outside repetitions.
+
+The following optional correctness commands are provided for a suitable target
+environment; **they have not been run**:
+
+```sh
+mpiexec -n 1 ./custatevec_bench --check-hadamard --nqubits 8
+mpiexec -n 2 ./custatevec_bench --check-hadamard --nqubits 8
+# One local bit, several global bits:
+mpiexec -n 4 ./custatevec_bench --check-hadamard --nqubits 3
+```
+
+`--check-hadamard` is a separate untimed mode with no CSV output. Its default is
+max(8, log2(P)+1) qubits, capped at 20 total qubits. It checks two independently
+initialized all-H-on-|0> runs against the normalized uniform state, every
+individual logical target on a normalized asymmetric complex input, and the
+complete ordered sequence on that input against an independent CPU pairwise
+reference. It interprets every distributed amplitude through the retained
+mapping, reduces maximum complex amplitude error and FP64 norm across MPI ranks,
+and requires error and norm deviation at most 1e-11. Use P>1 to exercise global
+targets and the site's launcher to cover multiple nodes. These checks run only
+when explicitly selected, never as part of measured repetitions.
+
+A target-environment record-count check for the default Hadamard job is:
+
+```sh
+mpiexec -n 2 ./custatevec_bench --job hadamard > hadamard.csv
+awk -F, 'NR == 1 { if ($0 != "job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits") exit 1; next }
+{ if (NF != 6 || $1 != "hadamard" || $2 != NR-1 || $3 != 31 || $4 != 2 || $5 !~ /^[0-9.eE+-]+$/ || $5+0 < 0 || $6 != "") exit 1; rows++ }
+END { if (rows != 128) exit 1 }' hadamard.csv
+```
+
+The harness retains defaults repeats=128 and warmup=0 and emits one timing row
+per measured repetition. The actual default record count has not been confirmed
+by execution.
+
 ## Implementation environment
 
 No config.mk, installed custatevec.h, nvcc, or MPI compiler wrapper was found in
@@ -159,3 +218,11 @@ No build, smoke execution, tests, or validation were performed. Target compiler,
 installed cuStateVec API compatibility, CUDA-aware transport, and multi-node
 behavior remain unverified. Later stages must consult the actual installed
 headers and matching release documentation.
+
+Stage 2 implementation also skipped all builds, tests, and validation at the
+user's explicit request. No new toolchain/dependency availability check was run;
+the environment observations above are from Stage 1. The Hadamard execution,
+CPU-reference checks, 128-row output, stream/transport behavior, and installed
+cuStateVec API compatibility remain unverified. The shared-stream swap design
+was informed by NVIDIA's classic API reference; installed headers and matching
+release documentation must be consulted on the target system.

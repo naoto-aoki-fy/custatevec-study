@@ -31,6 +31,7 @@ struct Options {
     int warmup = 0;
     std::uint64_t seed = 1;
     bool smoke = false;
+    bool check_hadamard = false;
     bool help = false;
     bool explicit_nqubits = false;
     std::string communicator = "auto";
@@ -104,6 +105,7 @@ public:
     virtual JobResult execute(Runtime&, std::uint64_t seed, std::uint64_t repetition) = 0;
 };
 std::unique_ptr<Job> make_job(const std::string& name);
+void check_hadamard(Runtime& runtime);
 void run_benchmark(Runtime& runtime, Job& job, const Options& options);
 
 } // namespace bench
