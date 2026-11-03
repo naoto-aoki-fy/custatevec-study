@@ -128,9 +128,40 @@ physical position of logical qubit q and is reset to identity each repetition.
 CSV measurement strings will contain exactly N bits, ordered q[N-1] through q[0].
 A workload returns its logical outcome to rank 0 before returning from execute.
 
-Use one explicitly bound stream for application and swap operations. Synchronize
+Use two distinct nonblocking CUDA streams on the rank's assigned GPU.
+`Runtime::stream` is the compute stream bound to the handle with
+`custatevecSetStream`, used for ordinary operations and initialization. Create
+`transfer_stream_` only with distributed swap resources (P>1), and pass it to
+`custatevecSVSwapWorkerCreate`. NVIDIA requires a dedicated transfer stream
+because worker execution synchronizes with its transfer peer independently of
+the handle's stream. Never enqueue gates or initialization on that stream.
+
+Before each distributed swap, synchronize the compute stream, execute all
+scheduler/worker batches, then synchronize the transfer stream before updating
+the mapping or submitting another gate. This follows NVIDIA's
+[stream contract](https://docs.nvidia.com/cuda/cuquantum/latest/custatevec/overview/index.html#using-cuda-stream-with-distributed-index-bit-swap-api)
+and distributed-swap example's final worker-stream wait. Worker calls manage
+their communication requests; their return alone is not treated as GPU
+completion. This ordering requires the selected cuStateVec communicator and
+CUDA-aware MPI to implement the worker's communication/completion contract;
+a CUDA stream wait alone does not complete arbitrary MPI requests. No extra
+MPI barrier is required per swap by that documented sequence.
+
+Both swap waits stay inside the timed Hadamard execute call. Synchronize
 the device before timing and before stopping; complete workload-owned MPI requests
-inside execute. All ranks must invoke the same collectives and swap schedule.
+inside execute. Keep initialization and allocation outside timing and reduce
+rank-local MPI_Wtime durations with MPI_MAX. All ranks must invoke the same
+collectives and swap schedule. During close, finish all GPU work and barrier
+before destroying swap resources. Destroy the worker before its transfer
+stream, retain its state/workspaces/event/communicator until then, and destroy
+both streams. Check errors through the existing world-aborting handlers.
+
+No installed cuStateVec headers or release documentation were found in the
+project, `/usr/local/include`, or `/opt` for this fix. The online references
+describe the intended completion sequence; installed-release compatibility
+and GPU/MPI behavior remain unverified. Builds, tests, and validation were
+skipped at the user's request.
+
 Warm-up seed indices use a separate high-bit domain; measured indices start at 0,
 independent of warm-up count. Future stochastic jobs must use the supplied seed
 and repetition index deterministically and coordinate draws across ranks.

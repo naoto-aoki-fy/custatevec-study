@@ -76,7 +76,7 @@ public:
     std::size_t state_bytes;
     cuDoubleComplex* state = nullptr;
     custatevecHandle_t handle = nullptr;
-    cudaStream_t stream = nullptr;
+    cudaStream_t stream = nullptr; // compute: handle operations and initialization
     std::vector<int> logical_to_physical;
 private:
     void allocate(void** pointer, std::size_t bytes, const char* purpose);
@@ -85,6 +85,7 @@ private:
     custatevecCommunicatorDescriptor_t communicator_ = nullptr;
     custatevecDistIndexBitSwapSchedulerDescriptor_t scheduler_ = nullptr;
     custatevecSVSwapWorkerDescriptor_t worker_ = nullptr;
+    cudaStream_t transfer_stream_ = nullptr; // dedicated to worker_; only for ranks > 1
     cudaEvent_t event_ = nullptr;
     void* swap_extra_ = nullptr;
     void* transfer_ = nullptr;

@@ -166,12 +166,31 @@ uses its target's current position. The final mapping is retained without a
 restoration swap. All ranks follow the same schedule, including when only one
 local bit is available.
 
-The handle's gate stream and the worker's transfer stream are the same explicit
-CUDA stream. The runtime synchronizes it before entering the swap transfer path
-to finish preceding gates and after the worker's batches to finish transfers
-before subsequent gates. These waits, swaps, communication, gates, and the
-harness's final device synchronization are inside the timed interval. Gate
-workspace is queried and allocated by `prepare`, outside repetitions.
+The handle uses `Runtime::stream` for compute, including gates and state
+initialization. A distinct nonblocking `transfer_stream_` is created only for
+P>1 and passed exclusively to the swap worker. Both streams belong to the
+rank's assigned GPU. NVIDIA's
+[stream contract](https://docs.nvidia.com/cuda/cuquantum/latest/custatevec/overview/index.html#using-cuda-stream-with-distributed-index-bit-swap-api)
+requires a dedicated transfer stream because the worker synchronizes with its
+peer independently of ordinary handle operations.
+
+Each swap first synchronizes the compute stream, executes all worker batches,
+then synchronizes the transfer stream before mapping updates or subsequent
+gates. This prevents transfers from reading unfinished gate writes and gates
+from accessing unfinished swap results. Worker execution manages communication;
+its return alone is not assumed to complete GPU work. The final transfer-stream
+wait follows NVIDIA's distributed-swap example. This relies on the selected
+cuStateVec communicator and CUDA-aware MPI completing worker-owned requests
+according to that API contract; CUDA stream synchronization does not itself
+wait on arbitrary MPI requests. No additional per-swap MPI barrier is used.
+
+These waits, swaps, communication, gates, and the harness's final device
+synchronization remain inside the timed interval; MPI_Wtime durations still
+use MPI_MAX across ranks. Initialization and workspace allocation remain outside
+timing. Streams live across repetitions. Cleanup synchronizes the device and
+barriers before destruction, destroys the worker before its transfer stream
+and dependent buffers/event/communicator, then destroys both streams. All
+errors use the existing MPI_Abort path rather than normal collective cleanup.
 
 The following optional correctness commands are provided for a suitable target
 environment; **they have not been run**:
@@ -443,9 +462,12 @@ Stage 2 implementation also skipped all builds, tests, and validation at the
 user's explicit request. No new toolchain/dependency availability check was run;
 the environment observations above are from Stage 1. The Hadamard execution,
 CPU-reference checks, 128-row output, stream/transport behavior, and installed
-cuStateVec API compatibility remain unverified. The shared-stream swap design
-was informed by NVIDIA's classic API reference; installed headers and matching
-release documentation must be consulted on the target system.
+cuStateVec API compatibility remain unverified. The subsequent two-stream fix
+uses NVIDIA's online stream contract and distributed-swap example. No installed
+cuStateVec headers or matching release documentation were found in the project,
+`/usr/local/include`, or `/opt` for that fix. Builds, tests, and validation were
+again skipped at the user's request. Installed-version compatibility and
+stream/communication completion on the target system remain unverified.
 
 Stage 3 also skipped builds, tests, and validation at the user's explicit
 request. No build or execution result is claimed. No installed cuStateVec header
