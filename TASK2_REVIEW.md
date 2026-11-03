@@ -18,7 +18,7 @@ No external configuration was modified or regenerated.
 
 | Requirement | Source observation |
 | --- | --- |
-| Distinct streams | The constructor creates `stream` with `cudaStreamNonBlocking`, binds it through `custatevecSetStream`, and separately creates `transfer_stream_` inside the P>1 branch. The latter is passed to `custatevecSVSwapWorkerCreate`. |
+| Distinct streams | The constructor creates `stream` with `cudaStreamNonBlocking`, binds it through `custatevecSetStream`, and separately creates `transfer_stream_` inside the P>1 branch. The latter is passed to `custatevecSVSwapWorkerCreate`. Adaptive sizing subsequently restricts distributed resources to workloads that actually swap. |
 | Dedicated transfer stream | Initialization kernels, matrix applications, probability computation, measurement, and asynchronous state copies/clears use the compute stream or its bound handle. Only the swap worker receives the transfer stream. |
 | Gates finish before swapping | `swap_local_global` waits on the compute stream before scheduler/worker calls. |
 | Swaps finish before subsequent gates | All scheduler batches execute before the transfer-stream wait; mapping updates and the next gate occur after that wait. Worker return alone is not treated as GPU completion. |
@@ -106,3 +106,12 @@ numerical correctness, and inter-node progress/completion. No additional
 per-swap MPI barrier is added on the basis of source inspection. Target build,
 GPU/MPI checks, and separate benchmark regression remain required before
 reporting the implementation as fully validated.
+
+
+Adaptive sizing supersedes the former minimum-only allocation policy. Transfer
+workspace is finalized after mandatory allocations and IPC setup, before any
+check swaps or benchmark warm-ups. The compute/transfer synchronization and
+measured communication boundaries described above are preserved. Measurement
+now omits swap resources even at P>1. See README.md and SPEC.md for common-budget
+selection, collective allocation retry, diagnostics and deferred cluster runs.
+No tests or validation were run for this adaptive-sizing follow-up, as requested.

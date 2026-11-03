@@ -209,6 +209,7 @@ void check_hadamard(Runtime& runtime) {
     if (runtime.nqubits > 20) fail("Hadamard check requires at most 20 total qubits");
     HadamardJob job;
     job.prepare(runtime);
+    runtime.finalize_preparation();
     const auto count = std::size_t{1} << runtime.nqubits;
     std::vector<cuDoubleComplex> reference(count);
 
@@ -263,6 +264,7 @@ void check_measure(Runtime& runtime) {
     if (runtime.nqubits > 20) fail("Measurement check requires at most 20 total qubits");
     MeasurementJob job;
     job.prepare(runtime);
+    runtime.finalize_preparation();
     const auto count = std::size_t{1} << runtime.nqubits;
     const auto base = static_cast<std::uint64_t>(runtime.topology.rank) * runtime.local_elements;
     std::vector<cuDoubleComplex> input(count), actual(runtime.local_elements);
@@ -368,6 +370,7 @@ void check_measure(Runtime& runtime) {
 
 void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
     job.prepare(runtime);
+    runtime.finalize_preparation();
     const auto one = [&](std::uint64_t repetition, bool measured, int iteration) {
         runtime.reset_mapping();
         job.initialize(runtime, options.seed, repetition);

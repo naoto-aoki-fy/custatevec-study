@@ -30,7 +30,7 @@ dependencies:
 	@command -v $(firstword $(NVCC)) >/dev/null 2>&1 || { echo 'Missing nvcc: load the CUDA compiler environment or set NVCC.' >&2; exit 1; }
 	@test -r '$(CUSTATEVEC_INCLUDEDIR)/custatevec.h' || { echo 'Missing custatevec.h: set CUSTATEVEC_ROOT or CUSTATEVEC_INCLUDEDIR.' >&2; exit 1; }
 
-build/%.o: src/%.cu include/bench.hpp $(CONFIG_MK) Makefile | dependencies
+build/%.o: src/%.cu include/bench.hpp include/transfer_policy.hpp $(CONFIG_MK) Makefile | dependencies
 	@mkdir -p build
 	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) -MMD -MP -c $< -o $@
 

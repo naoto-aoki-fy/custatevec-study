@@ -1,4 +1,5 @@
 #include "bench.hpp"
+#include "transfer_policy.hpp"
 
 #include <cstdlib>
 #include <exception>
@@ -30,7 +31,8 @@ Options parse_options(int argc, char** argv) {
         if (key == "--check-measure") { o.check_measure = true; continue; }
         if (key != "--job" && key != "--nqubits" && key != "--repeats" &&
             key != "--warmup" && key != "--seed" && key != "--communicator" &&
-            key != "--communicator-library" && key != "--p2p")
+            key != "--communicator-library" && key != "--p2p" &&
+            key != "--transfer-buffer" && key != "--transfer-buffer-fraction")
             throw std::runtime_error("Unknown option: " + key);
         if (++i == argc) throw std::runtime_error("Missing value for " + key);
         const std::string value = argv[i];
@@ -43,6 +45,14 @@ Options parse_options(int argc, char** argv) {
         if (key == "--communicator") { o.communicator = value; continue; }
         if (key == "--communicator-library") { o.communicator_library = value; continue; }
         if (key == "--p2p") { o.p2p = value; continue; }
+        if (key == "--transfer-buffer") { o.transfer_buffer = value; continue; }
+        if (key == "--transfer-buffer-fraction") {
+            std::size_t consumed = 0;
+            o.transfer_buffer_fraction = std::stod(value, &consumed);
+            if (consumed != value.size() || !transfer_policy::valid_fraction(o.transfer_buffer_fraction))
+                throw std::runtime_error("--transfer-buffer-fraction must be finite and in (0,0.95]");
+            continue;
+        }
         const auto n = number(value, key);
         if (key == "--seed") { o.seed = n; continue; }
         if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
@@ -51,6 +61,8 @@ Options parse_options(int argc, char** argv) {
         if (key == "--repeats") o.repeats = static_cast<int>(n);
         if (key == "--warmup") o.warmup = static_cast<int>(n);
     }
+    if (o.transfer_buffer != "auto" && o.transfer_buffer != "min")
+        throw std::runtime_error("--transfer-buffer must be auto or min");
     if (o.help) return o;
     if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) + static_cast<int>(o.check_measure) +
         static_cast<int>(!o.job.empty()) != 1)
@@ -80,6 +92,9 @@ void print_help() {
               << "  --p2p auto|off|required  explicit same-node CUDA IPC P2P (default auto)\n"
               << "    off uses only the communicator; MPI may still use CUDA IPC internally\n"
               << "    required aborts before timing if a needed same-node swap pair is unavailable\n"
+              << "  --transfer-buffer auto|min  common power-of-two swap workspace (default auto)\n"
+              << "  --transfer-buffer-fraction F  fraction of remaining free bytes, (0,0.95], default 0.95\n"
+              << "    rounding and the least-memory rank can substantially reduce the allocation\n"
               << "Hadamard, full-register measurement, and separate untimed checks are implemented.\n";
 }
 } // namespace bench

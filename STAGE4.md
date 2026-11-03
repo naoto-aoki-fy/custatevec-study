@@ -20,7 +20,7 @@ availability observations in the README are historical and were not refreshed.
 | Actual state and complete-register measurement | Each `MeasurementJob::measure` recomputes local norms, gathers rank masses, selects the owner, jointly samples its local bits, and combines owner bits with local bits |
 | State-dependent work stays timed | Norm calculation, rank selection, conditional local measurement, selected-amplitude mass query, and collapse are all inside execute |
 | Distributed collapse | Owner collapses all local bits using the selected actual mass; other ranks zero their state; the full physical outcome is broadcast and mapped to logical bits |
-| Completion before stop | Gates use the compute stream; the swap worker uses a distinct dedicated transfer stream for P>1. Each swap waits for compute before execution and transfer completion afterward; the harness synchronizes the device after execute; application collectives are blocking |
+| Completion before stop | Gates use the compute stream; the swap worker uses a distinct dedicated transfer stream for distributed swap workloads with P>1. Each swap waits for compute before execution and transfer completion afterward; the harness synchronizes the device after execute; application collectives are blocking |
 | Maximum rank-local interval | A local `MPI_Wtime` difference is taken before `MPI_Reduce(MPI_MAX)` |
 | Exclusions | Preparation/allocation, mapping reset, input initialization, initialization synchronization, start barrier, and CSV formatting are outside the interval; safety/error checks required by the operation remain inside execute |
 | Default CSV | Rank 0 writes one header and measured iterations 1..128; warm-ups do not write rows; final flush now detects buffered output failure before MPI cleanup |
@@ -82,3 +82,13 @@ boundaries, and collapse phase/norm checks. Exercise invalid rank counts,
 duplicate assignment, insufficient memory, and no-hang behavior with launcher
 timeouts. Finally run the two default-size jobs in separate invocations and
 check 128-row CSV output. None of these acceptance results is available here.
+
+
+Adaptive-workspace follow-up: transfer allocation now follows job preparation
+and communication/IPC setup. Auto selects the largest common power of two under
+95% of remaining free bytes; min is a capped baseline. Collective allocation
+failures release successes and retry smaller sizes. P=1 and measurement skip
+swap resources. README.md contains the sizing definition, metadata fields,
+unrun host/cluster commands and sequential A/B procedure. This follow-up's tests
+and validation were skipped at the user's request; earlier evidence in this
+stage record does not validate the adaptive policy.

@@ -1,4 +1,5 @@
 #include "bench.hpp"
+#include "transfer_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -73,11 +74,6 @@ __global__ void initialize_kernel(cuDoubleComplex* state, std::uint64_t count,
 unsigned blocks(std::uint64_t count) {
     return static_cast<unsigned>(std::min<std::uint64_t>((count + 255) / 256, 65535));
 }
-std::size_t power_of_two(std::size_t minimum) {
-    std::size_t size = 1;
-    while (size < minimum) size = checked_add(size, size);
-    return size;
-}
 custatevecCommunicatorType_t communicator_type(const Options& options) {
     if (options.communicator == "external") return CUSTATEVEC_COMMUNICATOR_TYPE_EXTERNAL;
     if (options.communicator == "openmpi") return CUSTATEVEC_COMMUNICATOR_TYPE_OPENMPI;
@@ -112,7 +108,7 @@ bool ipc_attempt(cudaError_t status, const char* operation, std::string& reason)
 Runtime::Runtime(const Options& options, const Topology& t)
     : topology(t), nqubits(options.nqubits), local_elements(std::uint64_t{1} << t.local_bits),
       state_bytes(checked_multiply(local_elements, sizeof(cuDoubleComplex))),
-      logical_to_physical(static_cast<std::size_t>(options.nqubits)) {
+      logical_to_physical(static_cast<std::size_t>(options.nqubits)), options_(options) {
     static_assert(sizeof(std::size_t) >= 8, "A 64-bit host is required");
     static_assert(sizeof(custatevecIndex_t) >= 8, "64-bit cuStateVec indices are required");
     int visible = 0;
@@ -141,7 +137,7 @@ Runtime::Runtime(const Options& options, const Topology& t)
     SV_TRY(custatevecCreate(&handle));
     SV_TRY(custatevecSetStream(handle, stream));
     allocate(reinterpret_cast<void**>(&state), state_bytes, "complex128 sub-state-vector");
-    if (t.ranks > 1) {
+    if (t.ranks > 1 && (options.smoke || options.check_hadamard || options.job == "hadamard")) {
         CUDA_TRY(cudaStreamCreateWithFlags(&transfer_stream_, cudaStreamNonBlocking));
         const auto type = communicator_type(options);
         const char* library = options.communicator_library.empty() ? nullptr : options.communicator_library.c_str();
@@ -160,26 +156,95 @@ Runtime::Runtime(const Options& options, const Topology& t)
         }
         if (!ipc_capable_)
             CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventDisableTiming));
-        std::size_t minimum_transfer = 0;
         SV_TRY(custatevecSVSwapWorkerCreate(handle, &worker_, communicator_, state, t.rank,
-                                            event_, CUDA_C_64F, transfer_stream_, &swap_extra_bytes_, &minimum_transfer));
-        transfer_bytes_ = power_of_two(minimum_transfer);
-        // Check the combined remaining requirements before allocating either buffer.
-        std::size_t free_bytes = 0, total_bytes = 0;
-        CUDA_TRY(cudaMemGetInfo(&free_bytes, &total_bytes));
-        if (checked_add(swap_extra_bytes_, transfer_bytes_) > free_bytes)
-            fail("Insufficient GPU memory for cuStateVec swap workspace and communication buffer");
+                                            event_, CUDA_C_64F, transfer_stream_, &swap_extra_bytes_, &minimum_transfer_));
         allocate(&swap_extra_, swap_extra_bytes_, "cuStateVec swap workspace");
-        allocate(&transfer_, transfer_bytes_, "communication transfer buffer");
         SV_TRY(custatevecSVSwapWorkerSetExtraWorkspace(handle, worker_, swap_extra_, swap_extra_bytes_));
-        SV_TRY(custatevecSVSwapWorkerSetTransferWorkspace(handle, worker_, transfer_, transfer_bytes_));
         SV_TRY(custatevecDistIndexBitSwapSchedulerCreate(handle, &scheduler_, t.global_bits, t.local_bits));
     }
     reset_mapping();
     // This smoke matrix is also a workspace-query example for later workload stages.
     if (options.smoke) reserve_gate_workspace(x_matrix, 1);
     report_metadata(options, device, properties);
-    setup_p2p(options);
+    if (worker_) setup_p2p(options);
+}
+
+void Runtime::finalize_preparation() {
+    if (preparation_finalized_) return;
+    synchronize();
+    const auto explicit_total = [&] {
+        return checked_add(checked_add(state_bytes, swap_extra_bytes_),
+            checked_add(transfer_bytes_, checked_add(gate_bytes_, measurement_bytes_)));
+    };
+    std::cerr << "rank=" << topology.rank << " transfer_buffer_policy=" << options_.transfer_buffer
+              << " transfer_buffer_fraction=" << std::setprecision(17) << options_.transfer_buffer_fraction
+              << " transfer_allocation_skipped=" << (worker_ ? "false" : "true") << '\n';
+    if (!worker_) {
+        std::cerr << "rank=" << topology.rank
+                  << " transfer_skip_reason=no-distributed-swaps transfer_bytes=0 explicit_allocation_bytes="
+                  << explicit_total() << '\n';
+        preparation_finalized_ = true;
+        return;
+    }
+    std::uint64_t common_minimum = 0;
+    const std::uint64_t local_minimum = minimum_transfer_;
+    MPI_TRY(MPI_Allreduce(&local_minimum, &common_minimum, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD));
+    const auto refresh = [&]() -> std::uint64_t {
+        // All successful allocations from a failed attempt have been released
+        // on all ranks before querying this snapshot.
+        MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
+        std::size_t free = 0, total = 0;
+        CUDA_TRY(cudaMemGetInfo(&free, &total));
+        const std::uint64_t local_budget = transfer_policy::budget(free, options_.transfer_buffer_fraction);
+        std::uint64_t common_budget = 0;
+        MPI_TRY(MPI_Allreduce(&local_budget, &common_budget, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD));
+        std::cerr << "rank=" << topology.rank << " transfer_baseline_free_bytes=" << free
+                  << " transfer_local_budget=" << local_budget << " transfer_common_budget=" << common_budget
+                  << " transfer_worker_minimum=" << local_minimum
+                  << " transfer_common_minimum=" << common_minimum << '\n';
+        return common_budget;
+    };
+    const auto initial = transfer_policy::select(refresh(), common_minimum, options_.transfer_buffer == "auto");
+    std::cerr << "rank=" << topology.rank << " transfer_initial_bytes=" << initial << '\n';
+    unsigned retries = 0;
+    transfer_bytes_ = transfer_policy::allocate_common(initial, common_minimum,
+        [&](std::uint64_t bytes) {
+            // Only cudaErrorMemoryAllocation is recoverable here. Every other
+            // CUDA failure retains the existing world-abort behavior.
+            const auto status = cudaMalloc(&transfer_, static_cast<std::size_t>(bytes));
+            if (status != cudaSuccess && status != cudaErrorMemoryAllocation)
+                cuda_check(status, "cudaMalloc(transfer)");
+            int failed = status == cudaErrorMemoryAllocation, any_failed = 0;
+            if (failed) {
+                transfer_ = nullptr;
+                std::cerr << "rank=" << topology.rank << " transfer_attempt_bytes=" << bytes
+                          << " allocation_failure=cudaErrorMemoryAllocation\n";
+                const auto pending = cudaGetLastError();
+                if (pending != cudaSuccess && pending != cudaErrorMemoryAllocation)
+                    cuda_check(pending, "cudaGetLastError after transfer allocation failure");
+            }
+            MPI_TRY(MPI_Allreduce(&failed, &any_failed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
+            return !any_failed;
+        },
+        [&] {
+            if (transfer_) CUDA_TRY(cudaFree(transfer_));
+            transfer_ = nullptr;
+        }, refresh,
+        [&](std::uint64_t previous, std::uint64_t next) {
+            ++retries;
+            std::cerr << "rank=" << topology.rank << " transfer_retries=" << retries
+                      << " previous_bytes=" << previous << " next_bytes=" << next
+                      << " reduction_reason=collective-allocation-failure-and-refreshed-budget\n";
+        });
+    // No rank registers or starts work until every allocation has succeeded.
+    SV_TRY(custatevecSVSwapWorkerSetTransferWorkspace(handle, worker_, transfer_, transfer_bytes_));
+    std::size_t remaining = 0, total = 0;
+    CUDA_TRY(cudaMemGetInfo(&remaining, &total));
+    std::cerr << "rank=" << topology.rank << " transfer_final_bytes=" << transfer_bytes_
+              << " transfer_retries=" << retries << " remaining_free_bytes=" << remaining
+              << " explicit_allocation_bytes=" << explicit_total() << '\n';
+    MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
+    preparation_finalized_ = true;
 }
 
 void Runtime::setup_p2p(const Options& options) {
@@ -370,6 +435,7 @@ void Runtime::reserve_gate_workspace(const cuDoubleComplex* matrix, int targets)
     SV_TRY(custatevecApplyMatrixGetWorkspaceSize(handle, CUDA_C_64F, topology.local_bits, matrix,
               CUDA_C_64F, CUSTATEVEC_MATRIX_LAYOUT_ROW, 0, targets, 0, CUSTATEVEC_COMPUTE_64F, &required));
     if (required <= gate_bytes_) return;
+    if (preparation_finalized_) fail("Gate workspace growth after transfer budget finalization");
     synchronize();
     if (gate_workspace_) CUDA_TRY(cudaFree(gate_workspace_));
     gate_workspace_ = nullptr;
@@ -383,6 +449,7 @@ void Runtime::reserve_gate_workspace(const cuDoubleComplex* matrix, int targets)
 }
 void Runtime::reserve_measurement_workspace() {
     if (measurement_workspace_) return;
+    if (preparation_finalized_) fail("Measurement workspace reservation after budget finalization");
     SV_TRY(custatevecGetDefaultWorkspaceSize(handle, &measurement_bytes_));
     allocate(&measurement_workspace_, measurement_bytes_, "cuStateVec measurement workspace");
     SV_TRY(custatevecSetWorkspace(handle, measurement_workspace_, measurement_bytes_));
@@ -397,7 +464,7 @@ void Runtime::apply_matrix(const cuDoubleComplex* matrix, const int32_t* targets
               CUSTATEVEC_COMPUTE_64F, gate_workspace_, gate_bytes_));
 }
 void Runtime::swap_local_global(int local_bit, int global_bit) {
-    if (!worker_ || local_bit < 0 || local_bit >= topology.local_bits ||
+    if (!preparation_finalized_ || !transfer_ || !worker_ || local_bit < 0 || local_bit >= topology.local_bits ||
         global_bit < topology.local_bits || global_bit >= nqubits)
         fail("swap_local_global requires valid local and global physical bit positions");
     // The worker uses a separate transfer stream. Finish compute writes before
@@ -444,6 +511,7 @@ void Runtime::expect_basis(std::uint64_t index) {
     if (any_bad || !std::isfinite(norm) || std::abs(norm - 1.0) > 1e-12) fail("Runtime smoke check: distributed basis state mismatch");
 }
 void Runtime::smoke_check() {
+    finalize_preparation();
     reset_mapping();
     initialize_zero();
     expect_basis(0);

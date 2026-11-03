@@ -38,6 +38,8 @@ struct Options {
     std::string communicator = "auto";
     std::string communicator_library;
     std::string p2p = "auto";
+    std::string transfer_buffer = "auto";
+    double transfer_buffer_fraction = 0.95;
 };
 Options parse_options(int argc, char** argv);
 void print_help();
@@ -70,6 +72,7 @@ public:
     void apply_matrix(const cuDoubleComplex* matrix, const int32_t* targets, int count);
     void swap_local_global(int local_bit, int global_bit);
     void smoke_check();
+    void finalize_preparation();
 
     const Topology& topology;
     int nqubits;
@@ -80,6 +83,9 @@ public:
     cudaStream_t stream = nullptr; // compute: handle operations and initialization
     std::vector<int> logical_to_physical;
 private:
+    Options options_;
+    bool preparation_finalized_ = false;
+    std::size_t minimum_transfer_ = 0;
     void allocate(void** pointer, std::size_t bytes, const char* purpose);
     void report_metadata(const Options& options, int device, const cudaDeviceProp& properties);
     void expect_basis(std::uint64_t index);

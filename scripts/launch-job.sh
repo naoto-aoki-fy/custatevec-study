@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Shared implementation; invoke launch-hadamard.sh or launch-measure.sh.
+# TRANSFER_BUFFER=auto|min and TRANSFER_BUFFER_FRACTION=(0,0.95] configure
+# the common swap workspace; measurement skips it. CLI overrides go after --.
 set -euo pipefail
 
 job=$1
@@ -27,4 +29,6 @@ exec "${MPIEXEC:-mpiexec}" "${NP_FLAG:--n}" "${RANKS:-2}" \
     --job "$job" --nqubits "${NQUBITS:-31}" --repeats "${REPEATS:-128}" \
     --warmup "${WARMUP:-0}" --seed "${SEED:-1}" \
     --p2p "${P2P:-auto}" \
+    --transfer-buffer "${TRANSFER_BUFFER:-auto}" \
+    --transfer-buffer-fraction "${TRANSFER_BUFFER_FRACTION:-0.95}" \
     "${communicator_args[@]}" "$@"

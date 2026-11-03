@@ -126,8 +126,8 @@ crashes or transport calls that never return.
 Stderr reports the requested mode, registered peer world ranks, fallback
 reasons, and the existing rank/host/GPU UUID/PCI identity metadata. Successful
 registration identifies explicit CUDA IPC P2P; it does not establish NVLink or
-any particular physical interconnect. No transfer-workspace sizing policy,
-benchmark timing boundary, or CSV column changes accompany this feature.
+any particular physical interconnect. Transfer-workspace policy is configured
+separately below; timing boundaries and CSV columns remain unchanged.
 
 ## Infrastructure smoke check
 
@@ -210,7 +210,7 @@ restoration swap. All ranks follow the same schedule, including when only one
 local bit is available.
 
 The handle uses `Runtime::stream` for compute, including gates and state
-initialization. A distinct nonblocking `transfer_stream_` is created only for
+initialization. A distinct nonblocking `transfer_stream_` is created only for distributed swaps with
 P>1 and passed exclusively to the swap worker. Both streams belong to the
 rank's assigned GPU. NVIDIA's
 [stream contract](https://docs.nvidia.com/cuda/cuquantum/latest/custatevec/overview/index.html#using-cuda-stream-with-distributed-index-bit-swap-api)
@@ -418,15 +418,15 @@ stderr separately. A nonzero exit status invalidates a partial output file.
 
 State storage alone is `16 * 2^(N-g)` bytes per GPU, or `16 * 2^N` globally.
 At N=31 this is 32 GiB globally: 32, 16, 8, or 4 GiB per GPU for P=1,2,4,8.
-Add the queried swap workspace, a power-of-two transfer buffer at least as
-large as the worker's minimum, and the job's gate or default measurement
-workspace. The current runtime creates swap resources for both jobs when P>1,
-so measurement also needs those buffers even though it does not swap bits.
+Add the job's gate or default measurement workspace. Distributed Hadamard and
+smoke checks also need queried swap extra workspace and a common power-of-two
+transfer buffer. Measurement and P=1 create no swap resources or transfer buffer.
 Host measurement mass storage is 8P bytes per rank plus small bit arrays.
 CUDA contexts, MPI transport, and library internals require further memory;
 the state-size figures alone are insufficient for capacity planning. Allocation
-checks use current free device memory; allocation races can still fail and
-abort the world. Workspace sizes and explicit totals are reported to stderr.
+checks use current free device memory. Transfer allocation races trigger the
+collective shrinking retry described below; other allocation failures abort the
+world. Workspace sizes and explicit totals are reported to stderr.
 
 ## Required API capabilities and cluster acceptance
 
@@ -570,3 +570,119 @@ APIs; their signatures and workspace behavior were taken from NVIDIA's
 Compatibility with the target release, deterministic check results, the default
 128-row measurement output, and GPU/MPI behavior remain unverified. The Stage 1
 toolchain observations above were not refreshed by a compiler availability check.
+
+
+## Adaptive transfer workspace
+
+`--transfer-buffer auto|min` defaults to `auto` and
+`--transfer-buffer-fraction F` defaults to `0.95`. Fractions must be finite
+and in `(0,0.95]`, including for skipped paths. Launch wrappers expose these as
+`TRANSFER_BUFFER` and `TRANSFER_BUFFER_FRACTION`, or accept CLI options after
+`--`. For example:
+
+```sh
+RANKS=4 NQUBITS=31 TRANSFER_BUFFER=auto TRANSFER_BUFFER_FRACTION=0.95 \
+  scripts/launch-hadamard.sh -- --p2p auto
+```
+
+Preparation allocates the state, swap extra workspace, worker/scheduler,
+communicator, events, CUDA IPC imports and job workspace before finalization.
+Smoke reserves its gate workspace in the constructor; benchmark and Hadamard
+check paths reserve theirs in `Job::prepare`. Measurement reserves its default
+workspace and then finalizes without creating any swap resources. P=1 also
+skips swap resources. No temporary transfer allocation is needed for setup.
+All preparation, sizing collectives and allocation retries occur before checks
+execute or warm-up/measured repetitions begin. Later workspace growth is rejected.
+
+For each swap rank, finalization snapshots `F_r` with `cudaMemGetInfo` and
+computes `budget_r = floor(F * F_r)`. The common budget is the world minimum;
+the common worker requirement is the world maximum of reported minima.
+`auto` selects the largest power of two within the common budget and at least
+that requirement. `min` selects the smallest power of two satisfying the same
+requirement, still within the budget. Neither policy exceeds the cap to meet
+the minimum. Zero/insufficient budgets fail with byte counts. Integer arithmetic
+uses a 128-bit intermediate for the fractional product; the default 0.95 is
+exactly 19/20, and other fractions use their parsed binary64 value, bounded by
+exactly 19/20. No fixed byte cap or state-vector-size cap is imposed.
+
+The [NVIDIA transfer-workspace API reference](https://docs.nvidia.com/cuda/cuquantum/26.03.2/custatevec/api-reference/custatevec/index.html#custatevecSVSwapWorkerSetTransferWorkspace)
+requires a power of two at least as large as the worker-reported minimum and
+specifies no additional maximum or state-size constraint. This implementation
+uses that contract; installed-library compatibility has not been validated.
+The host compiler must support unsigned 128-bit integer arithmetic.
+
+The percentage applies to **remaining free bytes after mandatory setup**, not
+total device capacity or total application usage. Power-of-two rounding and the
+least-memory rank can make allocation substantially lower than 95% of another
+GPU's free memory. It is not a utilization target or a speed guarantee. Even
+explicit P2P retains a valid transfer buffer for MPI fallback.
+
+`cudaMemGetInfo` is a snapshot. On `cudaErrorMemoryAllocation` anywhere, all
+ranks agree on failure, release successful allocations, barrier, and refresh
+budgets. The next common candidate is the smaller of half the failed size and
+the refreshed budget rounded down. This strictly decreasing sequence is bounded
+by 64 attempts; it stops coherently if no size can satisfy the minimum. `min`
+has no smaller valid fallback. Other CUDA errors abort immediately. Workers
+receive the final buffer only after collective allocation success; all ranks
+finish finalization before swapping.
+
+Stderr includes policy/fraction, skipped status/reason, each budgeting snapshot,
+local/common budgets, worker/common minima, initial/final sizes, retry count and
+reduction reasons, post-allocation free bytes and explicit allocation totals.
+Explicit totals include state, swap extra, transfer, gate and measurement
+buffers, excluding CUDA/MPI/library internals and IPC imports. Those internals
+already reduce the free-memory snapshot. Stdout CSV is unchanged.
+
+### Deferred cluster checks and sequential A/B procedure
+
+Tests, builds, validation and performance runs were skipped at the user's
+request. No correctness or performance results are claimed for this change.
+The focused host test source includes simulated cross-rank allocation failure;
+it requires neither MPI nor CUDA:
+
+```sh
+c++ -std=c++17 -Iinclude tests/transfer_policy_test.cpp -o /tmp/transfer_policy_test
+/tmp/transfer_policy_test
+make CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
+for p in 1 2 4; do
+  for check in smoke-check check-hadamard check-measure; do
+    for policy in min auto; do
+      for p2p in off auto; do
+        mpiexec -n "$p" ./custatevec_bench --"$check" --nqubits 8 \
+          --p2p "$p2p" --transfer-buffer "$policy"
+      done
+    done
+  done
+done
+for check in smoke-check check-hadamard check-measure; do
+  mpiexec -n 4 ./custatevec_bench --"$check" --nqubits 3
+done
+mpiexec -n 1 ./custatevec_bench --job hadamard --nqubits 8 --repeats 1 2>single.meta
+mpiexec -n 4 ./custatevec_bench --job measure --nqubits 8 --repeats 1 2>measure.meta
+```
+
+Inspect `single.meta` and `measure.meta` for `transfer_allocation_skipped=true`,
+`transfer_bytes=0` and the skip reason. Use scheduler placement flags to assign
+one distinct GPU to each rank. Within the same exclusive GPU allocation, run
+these cases sequentially (no competing jobs), with the same GPU type, placement,
+total N, warm-up count and repetition count. Choose N to fit mandatory resources
+on every rank; retain separate CSV and metadata files:
+
+```sh
+for p in 1 2 4; do
+  for policy in min auto; do
+    for p2p in off auto; do
+      RANKS="$p" NQUBITS=28 WARMUP=4 REPEATS=128 P2P="$p2p" \
+        TRANSFER_BUFFER="$policy" TRANSFER_BUFFER_FRACTION=0.95 \
+        scripts/launch-hadamard.sh \
+        >"ab-p${p}-${p2p}-${policy}.csv" 2>"ab-p${p}-${p2p}-${policy}.meta"
+    done
+  done
+done
+```
+
+A nonzero exit invalidates that run. Compare elapsed-time distributions using
+MPI_MAX CSV rows and correlate with final sizes/retries in metadata. Report
+observations without assuming auto wins or P=4 must beat P=1. Placement differs
+in rank count when comparing P values; hold the rank-to-GPU placement rule and
+GPU type fixed, and keep placement identical within each four-case comparison.

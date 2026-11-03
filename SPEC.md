@@ -98,7 +98,7 @@ memory and events in both directions; release rejected partial imports.
 Expected unsupported/mapping/peer-resource/OS IPC failures diagnose fallback;
 unrelated CUDA errors abort. Report requested mode, registered world ranks,
 GPU identities, and fallback reasons to stderr without inferring NVLink.
-Do all setup outside repetitions and preserve the transfer-workspace policy.
+Do all setup outside repetitions. Apply the adaptive transfer-workspace policy below.
 
 ## Timing contract
 
@@ -204,3 +204,38 @@ Failures from MPI, CUDA, cuStateVec, allocation, or argument handling abort the
 world; do not unwind into collective cleanup while peers might be waiting.
 This handles reported errors, not external process death or a transport hang;
 site launcher timeouts remain necessary for those cases.
+
+
+## Adaptive transfer-workspace policy
+
+Default to `--transfer-buffer auto --transfer-buffer-fraction 0.95`; support
+`min` and finite fractions in `(0,0.95]`. After mandatory state, job workspaces,
+swap descriptors/extra workspace and communication/IPC setup, snapshot free
+bytes per rank. Budget floor(fraction * free); agree on the minimum budget and
+maximum worker minimum using MPI_UINT64_T reductions. Select the largest valid
+power of two for auto, or smallest for min, without exceeding the common cap.
+Use checked 64-bit sizes and exact wide integer products for budgeting. Do not
+apply fixed byte or state-vector-size caps. The default fraction is exact 19/20.
+The published worker API requires a power of two at least the worker minimum;
+installed-library compatibility remains a target-cluster check.
+
+Finalize after Job::prepare and before checks or benchmark warm-ups. Smoke
+reserves its matrix workspace before finalization. Reject later workspace growth.
+P=1 and measurement create no swap resources. Distributed swapping retains an
+MPI fallback buffer with explicit P2P. Setup requires no temporary transfer buffer.
+
+Coordinate cudaErrorMemoryAllocation across ranks before registering buffers.
+Release all successful allocations, refresh budgets after a barrier, and retry
+with the smaller of half the prior size and the rounded-down refreshed common
+budget. At most 64 strictly decreasing attempts are possible. Abort coherently
+when the minimum cannot fit; unrelated CUDA errors remain fatal. Register only
+a collectively successful allocation and finish finalization on all ranks before
+swapping. Report policy, fraction, skip status, baseline/free budgets, minima,
+initial/final sizes, retries/reasons, remaining free memory and explicit totals
+to stderr outside timing. Preserve CSV, MPI_MAX, all communication within the
+timed operation, complex128/FP64, gate sequence and logical mapping. Rounding
+and the least-memory rank can substantially reduce the allocated fraction.
+
+See README.md for unrun host tests, cluster correctness commands and sequential
+four-combination P2P/policy A/B runs. No tests or validation were run for this
+change, as requested by the user.
