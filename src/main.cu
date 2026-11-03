@@ -26,6 +26,7 @@ Options parse_options(int argc, char** argv) {
         if (key == "--help") { o.help = true; continue; }
         if (key == "--smoke-check") { o.smoke = true; continue; }
         if (key == "--check-hadamard") { o.check_hadamard = true; continue; }
+        if (key == "--check-measure") { o.check_measure = true; continue; }
         if (key != "--job" && key != "--nqubits" && key != "--repeats" &&
             key != "--warmup" && key != "--seed" && key != "--communicator" &&
             key != "--communicator-library")
@@ -44,9 +45,9 @@ Options parse_options(int argc, char** argv) {
         if (key == "--warmup") o.warmup = static_cast<int>(n);
     }
     if (o.help) return o;
-    if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) +
+    if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) + static_cast<int>(o.check_measure) +
         static_cast<int>(!o.job.empty()) != 1)
-        throw std::runtime_error("Select exactly one of --job hadamard, --job measure, --smoke-check, or --check-hadamard");
+        throw std::runtime_error("Select exactly one of --job hadamard, --job measure, --smoke-check, --check-hadamard, or --check-measure");
     if (!o.job.empty() && o.job != "hadamard" && o.job != "measure")
         throw std::runtime_error("--job must be hadamard or measure");
     // Signed cuStateVec indices have 63 value bits. Byte arithmetic is checked separately.
@@ -60,14 +61,14 @@ Options parse_options(int argc, char** argv) {
     return o;
 }
 void print_help() {
-    std::cerr << "Usage: custatevec_bench (--job hadamard|measure | --smoke-check | --check-hadamard) [options]\n"
+    std::cerr << "Usage: custatevec_bench (--job hadamard|measure | --smoke-check | --check-hadamard | --check-measure) [options]\n"
               << "  --nqubits N       default 31; checks default max(8,log2(ranks)+1), cap 20\n"
               << "  --repeats R       measured repetitions (default 128)\n"
               << "  --warmup W        separate warm-ups (default 0)\n"
               << "  --seed S          reproducible uint64 seed (default 1)\n"
               << "  --communicator auto|openmpi|mpich|external\n"
               << "  --communicator-library PATH  MPI library or external communicator plugin\n"
-              << "Hadamard and untimed checks are implemented; measure remains unavailable.\n";
+              << "Hadamard, full-register measurement, and separate untimed checks are implemented.\n";
 }
 } // namespace bench
 
@@ -86,7 +87,7 @@ int main(int argc, char** argv) {
         if (options.help) {
             if (rank == 0) bench::print_help();
         } else {
-            const bool checking = options.smoke || options.check_hadamard;
+            const bool checking = options.smoke || options.check_hadamard || options.check_measure;
             if (checking && !options.explicit_nqubits) {
                 int bits = 0;
                 for (int p = ranks; p > 1; p >>= 1) ++bits;
@@ -100,6 +101,7 @@ int main(int argc, char** argv) {
             bench::Runtime runtime(options, topology);
             if (options.smoke) runtime.smoke_check();
             else if (options.check_hadamard) bench::check_hadamard(runtime);
+            else if (options.check_measure) bench::check_measure(runtime);
             else bench::run_benchmark(runtime, *job, options);
             runtime.close();
             topology.close();

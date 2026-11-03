@@ -32,6 +32,7 @@ struct Options {
     std::uint64_t seed = 1;
     bool smoke = false;
     bool check_hadamard = false;
+    bool check_measure = false;
     bool help = false;
     bool explicit_nqubits = false;
     std::string communicator = "auto";
@@ -64,6 +65,7 @@ public:
     void initialize_uniform();
     void reset_mapping();
     void reserve_gate_workspace(const cuDoubleComplex* matrix, int targets);
+    void reserve_measurement_workspace();
     void apply_matrix(const cuDoubleComplex* matrix, const int32_t* targets, int count);
     void swap_local_global(int local_bit, int global_bit);
     void smoke_check();
@@ -87,6 +89,8 @@ private:
     void* swap_extra_ = nullptr;
     void* transfer_ = nullptr;
     void* gate_workspace_ = nullptr;
+    void* measurement_workspace_ = nullptr;
+    std::size_t measurement_bytes_ = 0;
     std::size_t swap_extra_bytes_ = 0, transfer_bytes_ = 0, gate_bytes_ = 0;
 };
 
@@ -106,6 +110,7 @@ public:
 };
 std::unique_ptr<Job> make_job(const std::string& name);
 void check_hadamard(Runtime& runtime);
+void check_measure(Runtime& runtime);
 void run_benchmark(Runtime& runtime, Job& job, const Options& options);
 
 } // namespace bench

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 
 namespace bench {
@@ -42,6 +43,115 @@ public:
         for (int q = 0; q < runtime.nqubits; ++q) apply_hadamard(runtime, q);
         return {};
     }
+};
+
+// Counter-derived SplitMix64 draws: warm-ups use the harness's high-bit domain.
+// Taking 53 bits gives a reproducible double in [0,1), including zero.
+double measurement_draw(std::uint64_t seed, std::uint64_t repetition) {
+    std::uint64_t z = seed + UINT64_C(0x9e3779b97f4a7c15) * (repetition + 1);
+    z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return static_cast<double>((z ^ (z >> 31)) >> 11) * 0x1.0p-53;
+}
+
+class MeasurementJob final : public Job {
+public:
+    void prepare(Runtime& runtime) override {
+        ordering_.resize(runtime.topology.local_bits);
+        bits_.resize(runtime.topology.local_bits);
+        std::iota(ordering_.begin(), ordering_.end(), 0);
+        masses_.resize(runtime.topology.ranks);
+        runtime.reserve_measurement_workspace();
+        if (runtime.topology.rank == 0)
+            std::cerr << "measurement=joint-full-register rank_selection=measured-FP64-masses"
+                      << " rng=SplitMix64-counter-53-bits host_mass_buffer_bytes="
+                      << checked_multiply(masses_.size(), sizeof(double)) << '\n';
+    }
+    void initialize(Runtime& runtime, std::uint64_t, std::uint64_t) override {
+        runtime.initialize_uniform();
+    }
+    JobResult execute(Runtime& runtime, std::uint64_t seed, std::uint64_t repetition) override {
+        return measure(runtime, measurement_draw(seed, repetition));
+    }
+    // Also used by the untimed check to exercise the production path with
+    // controlled draws. No allocation or state-dependent caching occurs here.
+    JobResult measure(Runtime& runtime, double draw) {
+        const auto& t = runtime.topology;
+        double local_mass = 0.0;
+        SV_TRY(custatevecAbs2SumArray(runtime.handle, runtime.state, CUDA_C_64F,
+            t.local_bits, &local_mass, nullptr, 0, nullptr, nullptr, 0));
+        CUDA_TRY(cudaStreamSynchronize(runtime.stream));
+        MPI_TRY(MPI_Gather(&local_mass, 1, MPI_DOUBLE, masses_.data(), 1, MPI_DOUBLE,
+                           0, MPI_COMM_WORLD));
+        int owner = -1;
+        double conditional_draw = 0.0;
+        if (t.rank == 0) {
+            if (!std::isfinite(draw) || draw < 0.0 || draw >= 1.0)
+                fail("Measurement draw must be in [0,1)");
+            double total = 0.0;
+            for (const auto mass : masses_) {
+                if (!std::isfinite(mass) || mass < 0.0)
+                    fail("Measurement found an invalid sub-state-vector squared norm");
+                total += mass;
+            }
+            if (!std::isfinite(total) || total <= 0.0)
+                fail("Measurement requires a finite positive global squared norm");
+            // Multiplication can round to total even though draw < 1.
+            const double target = std::min(draw * total, std::nextafter(total, 0.0));
+            double prefix = 0.0;
+            for (int rank = 0; rank < t.ranks; ++rank) {
+                const double end = prefix + masses_[rank];
+                // Half-open intervals skip zero-mass ranks, including leading
+                // and trailing ones. Equality belongs to the following rank.
+                if (masses_[rank] > 0.0 && target < end) {
+                    owner = rank;
+                    conditional_draw = std::min(std::max((target - prefix) / masses_[rank], 0.0),
+                                                std::nextafter(1.0, 0.0));
+                    break;
+                }
+                prefix = end;
+            }
+            if (owner < 0) fail("Measurement could not select a positive-mass rank");
+        }
+        MPI_TRY(MPI_Bcast(&owner, 1, MPI_INT, 0, MPI_COMM_WORLD));
+        MPI_TRY(MPI_Bcast(&conditional_draw, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD));
+
+        std::uint64_t physical = 0;
+        if (t.rank == owner) {
+            // Condition the single global draw on the selected rank. Offset 0
+            // and the measured local mass avoid subtracting a large global
+            // offset inside the device's local cumulative-probability search.
+            SV_TRY(custatevecBatchMeasureWithOffset(runtime.handle, runtime.state, CUDA_C_64F,
+                t.local_bits, bits_.data(), ordering_.data(), t.local_bits,
+                conditional_draw, CUSTATEVEC_COLLAPSE_NONE, 0.0, local_mass));
+            CUDA_TRY(cudaStreamSynchronize(runtime.stream));
+            physical = static_cast<std::uint64_t>(owner) << t.local_bits;
+            for (int q = 0; q < t.local_bits; ++q) {
+                if (bits_[q] != 0 && bits_[q] != 1) fail("Invalid local measurement bit");
+                physical |= static_cast<std::uint64_t>(bits_[q]) << q;
+            }
+            double selected_mass = 0.0;
+            SV_TRY(custatevecAbs2SumArray(runtime.handle, runtime.state, CUDA_C_64F,
+                t.local_bits, &selected_mass, nullptr, 0, bits_.data(), ordering_.data(), t.local_bits));
+            CUDA_TRY(cudaStreamSynchronize(runtime.stream));
+            if (!std::isfinite(selected_mass) || selected_mass <= 0.0)
+                fail("Measurement selected a zero or invalid probability amplitude");
+            // Scale the actual complex amplitude by a positive real factor;
+            // its phase is retained. All local bits are fixed by this collapse.
+            SV_TRY(custatevecCollapseByBitString(runtime.handle, runtime.state, CUDA_C_64F,
+                t.local_bits, bits_.data(), ordering_.data(), t.local_bits, selected_mass));
+        } else {
+            CUDA_TRY(cudaMemsetAsync(runtime.state, 0, runtime.state_bytes, runtime.stream));
+        }
+        MPI_TRY(MPI_Bcast(&physical, 1, MPI_UINT64_T, owner, MPI_COMM_WORLD));
+        std::uint64_t logical = 0;
+        for (int q = 0; q < runtime.nqubits; ++q)
+            logical |= ((physical >> runtime.logical_to_physical[q]) & std::uint64_t{1}) << q;
+        return {logical, true};
+    }
+private:
+    std::vector<int32_t> ordering_, bits_;
+    std::vector<double> masses_;
 };
 
 // These host-side helpers are used only by the opt-in, untimed small-N check.
@@ -91,6 +201,7 @@ void compare_logical_state(Runtime& runtime, const std::vector<cuDoubleComplex>&
 
 std::unique_ptr<Job> make_job(const std::string& name) {
     if (name == "hadamard") return std::make_unique<HadamardJob>();
+    if (name == "measure") return std::make_unique<MeasurementJob>();
     throw std::runtime_error("Job '" + name + "' is not implemented; no timings produced");
 }
 
@@ -146,6 +257,113 @@ void check_hadamard(Runtime& runtime) {
     for (int q = 0; q < runtime.nqubits; ++q) cpu_hadamard(reference, q);
     job.execute(runtime, 0, 0);
     compare_logical_state(runtime, reference, "all H on asymmetric complex input");
+}
+
+void check_measure(Runtime& runtime) {
+    if (runtime.nqubits > 20) fail("Measurement check requires at most 20 total qubits");
+    MeasurementJob job;
+    job.prepare(runtime);
+    const auto count = std::size_t{1} << runtime.nqubits;
+    const auto base = static_cast<std::uint64_t>(runtime.topology.rank) * runtime.local_elements;
+    std::vector<cuDoubleComplex> input(count), actual(runtime.local_elements);
+    const std::vector<double> draws = {0.0, 0.125, 0.25, 0.5, 0.75, std::nextafter(1.0, 0.0)};
+    const auto abs2 = [](cuDoubleComplex a) { return a.x * a.x + a.y * a.y; };
+    const auto check = [&](const std::string& label, bool direct_uniform) {
+        double total = 0.0;
+        for (const auto a : input) total += abs2(a);
+        for (const double controlled_draw : draws) {
+            // Odd-N uniform amplitudes have rounded squared magnitudes. Keep
+            // their interior probes away from CDF boundaries so CPU sequential
+            // sums and GPU tree sums need not round identically. The exact
+            // sparse fixture below exercises boundaries without this ambiguity.
+            const double draw = direct_uniform && controlled_draw > 0.0 && controlled_draw < 0.9
+                ? controlled_draw + 0.0314159265358979 : controlled_draw;
+            runtime.reset_mapping();
+            if (direct_uniform) job.initialize(runtime, 0, 0);
+            else CUDA_TRY(cudaMemcpyAsync(runtime.state, input.data() + base, runtime.state_bytes,
+                                          cudaMemcpyHostToDevice, runtime.stream));
+            runtime.synchronize();
+            if (direct_uniform) {
+                CUDA_TRY(cudaMemcpy(actual.data(), runtime.state, runtime.state_bytes, cudaMemcpyDeviceToHost));
+                int bad = 0, any_bad = 0;
+                for (std::size_t i = 0; i < actual.size(); ++i)
+                    if (actual[i].x != input[base + i].x || actual[i].y != 0.0) bad = 1;
+                MPI_TRY(MPI_Allreduce(&bad, &any_bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
+                if (any_bad) fail("Measurement check: direct global uniform initialization mismatch");
+            }
+            // Independent CPU cumulative reference over the full small fixture.
+            const double target = std::min(draw * total, std::nextafter(total, 0.0));
+            double cumulative = 0.0;
+            std::uint64_t expected = 0;
+            for (; expected < count; ++expected) {
+                cumulative += abs2(input[expected]);
+                if (target < cumulative) break;
+            }
+            if (expected == count) fail("Measurement CPU reference could not select an outcome");
+            const auto result = job.measure(runtime, draw);
+            runtime.synchronize();
+            std::uint64_t minimum = 0, maximum = 0;
+            MPI_TRY(MPI_Allreduce(&result.measurement, &minimum, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD));
+            MPI_TRY(MPI_Allreduce(&result.measurement, &maximum, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD));
+            if (!result.has_measurement || minimum != expected || maximum != expected)
+                fail("Measurement check: outcome/reference or rank agreement mismatch: " + label);
+            CUDA_TRY(cudaMemcpy(actual.data(), runtime.state, runtime.state_bytes, cudaMemcpyDeviceToHost));
+            const double scale = 1.0 / std::sqrt(abs2(input[expected]));
+            const auto phase = make_cuDoubleComplex(input[expected].x * scale, input[expected].y * scale);
+            int bad = 0, any_bad = 0;
+            std::uint64_t survivors = 0, global_survivors = 0;
+            double norm = 0.0, global_norm = 0.0;
+            for (std::size_t i = 0; i < actual.size(); ++i) {
+                const auto a = actual[i];
+                if (!std::isfinite(a.x) || !std::isfinite(a.y)) bad = 1;
+                if (a.x != 0.0 || a.y != 0.0) ++survivors;
+                norm += abs2(a);
+                if (base + i == expected) {
+                    if (std::hypot(a.x - phase.x, a.y - phase.y) > 1e-11) bad = 1;
+                } else if (a.x != 0.0 || a.y != 0.0) bad = 1;
+            }
+            MPI_TRY(MPI_Allreduce(&bad, &any_bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
+            MPI_TRY(MPI_Allreduce(&survivors, &global_survivors, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD));
+            MPI_TRY(MPI_Allreduce(&norm, &global_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
+            if (any_bad || global_survivors != 1 || !std::isfinite(global_norm) ||
+                std::abs(global_norm - 1.0) > 1e-11)
+                fail("Measurement check: collapse, phase, or normalization mismatch: " + label);
+        }
+        if (runtime.topology.rank == 0)
+            std::cerr << "Measurement check passed: " << label << " controlled_draws=" << draws.size() << '\n';
+    };
+    // Basis states on low, middle, and high rank indices; negative imaginary
+    // phase and a nonunit input norm exercise phase-preserving normalization.
+    for (const int owner : {0, runtime.topology.ranks / 2, runtime.topology.ranks - 1}) {
+        std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+        input[static_cast<std::uint64_t>(owner) * runtime.local_elements + runtime.local_elements - 1] =
+            make_cuDoubleComplex(0.0, -2.0);
+        check("basis on rank " + std::to_string(owner), false);
+    }
+    for (int sparse = 0; sparse < 2; ++sparse) {
+        std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+        for (int rank = 0; rank < runtime.topology.ranks; ++rank) {
+            // In sparse mode only odd ranks survive (rank 0 for P=1).
+            if (sparse && runtime.topology.ranks > 1 && rank % 2 == 0) continue;
+            const auto offset = static_cast<std::uint64_t>(rank) * runtime.local_elements;
+            const double weight = rank + 1.0;
+            input[offset] = make_cuDoubleComplex(-weight, 0.0);
+            input[offset + runtime.local_elements - 1] = make_cuDoubleComplex(0.0, 2.0 * weight);
+        }
+        check(sparse ? "unequal masses and zero-probability ranks" : "unequal rank and local masses", false);
+    }
+    // Equal exact masses give controlled draws precisely on rank and local
+    // interval boundaries, with zero-probability gaps between the two entries.
+    std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+    for (int rank = 0; rank < runtime.topology.ranks; ++rank) {
+        const auto offset = static_cast<std::uint64_t>(rank) * runtime.local_elements;
+        input[offset] = make_cuDoubleComplex(1.0, 0.0);
+        input[offset + runtime.local_elements - 1] = make_cuDoubleComplex(0.0, -1.0);
+    }
+    check("exact interval boundaries with local zero-probability gaps", false);
+    const double uniform = std::exp2(-0.5 * runtime.nqubits);
+    std::fill(input.begin(), input.end(), make_cuDoubleComplex(uniform, 0.0));
+    check("independently GPU-initialized globally normalized uniform state", true);
 }
 
 void run_benchmark(Runtime& runtime, Job& job, const Options& options) {

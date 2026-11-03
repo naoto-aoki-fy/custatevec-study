@@ -1,8 +1,8 @@
 # Distributed cuStateVec benchmark
 
-Stages 1 and 2 provide a C++17/CUDA/MPI runtime, a reusable benchmark timing
-harness, the Hadamard benchmark, and opt-in untimed small-state checks.
-`measure` remains a Stage 3 placeholder and exits unsuccessfully without CSV output.
+Stages 1 through 3 provide a C++17/CUDA/MPI runtime, a reusable benchmark timing
+harness, independent Hadamard and full-register measurement benchmarks, and
+opt-in untimed small-state checks.
 The common contract is recorded in [SPEC.md](SPEC.md).
 
 ## Build prerequisites
@@ -122,8 +122,7 @@ mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 31 --repeats 128 --warm
 mpiexec -n 2 ./custatevec_bench --job measure --nqubits 31 --repeats 128 --warmup 0 --seed 1
 ```
 
-The Hadamard command is implemented. The measurement command still fails
-explicitly before allocating the large state and produces no CSV.
+Both commands are implemented and run as separate benchmark jobs.
 
 Workloads implement `Job` in `include/bench.hpp` and are connected through
 `make_job` in `src/benchmark.cu`. `prepare` allocates reusable workspaces/descriptors;
@@ -140,7 +139,7 @@ Only rank 0 writes benchmark CSV to stdout:
 job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits
 ```
 
-Iteration numbering starts at 1; measurement bits are empty for Hadamard and will
+Iteration numbering starts at 1; measurement bits are empty for Hadamard and are
 be ordered q[N-1]..q[0] for measurement. Metadata goes to stderr: versions, GPU
 identities, rank mapping, explicit allocation bytes, seed, warm-up count, and
 timing scope. Memory capacity checks use current free GPU memory after context
@@ -207,6 +206,65 @@ The harness retains defaults repeats=128 and warmup=0 and emits one timing row
 per measured repetition. The actual default record count has not been confirmed
 by execution.
 
+## Full-register measurement workload (Stage 3)
+
+Before each repetition, a GPU kernel writes every local amplitude as
+`exp2(-N/2) + 0i`, using the same global N on every rank. No gates prepare this
+state. Initialization, device completion, and the start barrier precede timing.
+Defaults remain 128 independently initialized, separately timed measurements,
+zero warm-ups, and complex128 storage with double probability calculations.
+
+Inside each measured operation, `custatevecAbs2SumArray` computes the actual
+local squared norm. After stream completion, MPI gathers one double per rank
+to rank 0; no amplitudes are gathered. Rank 0 sums these masses and uses one
+seed/repetition-derived draw to select a rank from half-open probability
+intervals. Zero-mass ranks are skipped. The draw is scaled by the measured
+global squared norm, so this path also handles nonunit input norms. A product
+rounded to the interval's upper endpoint is clamped to the preceding double.
+
+Rank 0 broadcasts the owner and the conditional draw within that rank's mass.
+The owner calls `custatevecBatchMeasureWithOffset` once for all local bits,
+using offset zero and its measured local squared norm for this conditional
+distribution. This is the local part of one joint full-register measurement.
+It queries the selected amplitude's actual squared magnitude using a full local
+bit mask, then calls `custatevecCollapseByBitString` with that normalization.
+This preserves the selected complex phase. Every other rank zeros its entire
+sub-state-vector. The owner broadcasts the complete 64-bit physical outcome,
+including its rank bits; all ranks translate it through the logical mapping.
+Rank 0 formats exactly N binary characters, q[N-1] through q[0], after timing.
+
+Draws use a SplitMix64 counter transformation of the uint64 seed and repetition
+index, converting its top 53 bits to a double in [0,1). Measured indices start
+at zero and warm-ups occupy the separate high-bit domain. Repetitions do not
+reseed a generator to repeat one draw, and warm-ups do not change measured draws.
+
+The default cuStateVec workspace is queried, capacity-checked, allocated, and
+bound to the handle in `prepare`. Bit ordering, outcome storage, and the host
+rank-mass buffer are also allocated there. Workspace and total explicit GPU
+allocation sizes are reported to stderr. No application buffers or descriptors
+are allocated in `execute`, and probability results are recomputed each time.
+Probability computation, draw coordination, MPI communication, local
+measurement, global collapse, normalization, and final device synchronization
+all belong to the measured interval.
+
+Optional deterministic checks for the target environment, **not run** here:
+
+```sh
+mpiexec -n 1 ./custatevec_bench --check-measure --nqubits 8
+mpiexec -n 2 ./custatevec_bench --check-measure --nqubits 8
+mpiexec -n 4 ./custatevec_bench --check-measure --nqubits 3
+```
+
+This separate mode defaults to max(8, log2(P)+1) qubits, caps N at 20, and emits
+no benchmark CSV. Controlled draws include zero, exact interval boundaries,
+and the largest double below one. An independent CPU cumulative reference
+checks basis states on low/middle/high ranks, unequal rank and local masses,
+zero-probability ranks, local probability gaps, and GPU uniform initialization.
+Fixtures include nonunit norms and complex phases. Every collapse checks the
+complete local state on each rank, exactly one surviving global amplitude,
+retained phase, global unit norm, and outcome agreement across all ranks.
+These deterministic fixtures do not use a statistical sampling assertion.
+
 ## Implementation environment
 
 No config.mk, installed custatevec.h, nvcc, or MPI compiler wrapper was found in
@@ -226,3 +284,12 @@ CPU-reference checks, 128-row output, stream/transport behavior, and installed
 cuStateVec API compatibility remain unverified. The shared-stream swap design
 was informed by NVIDIA's classic API reference; installed headers and matching
 release documentation must be consulted on the target system.
+
+Stage 3 also skipped builds, tests, and validation at the user's explicit
+request. No build or execution result is claimed. No installed cuStateVec header
+was located in `/usr/local`, `/opt`, or the project while selecting measurement
+APIs; their signatures and workspace behavior were taken from NVIDIA's
+[classic API reference](https://docs.nvidia.com/cuda/cuquantum/latest/custatevec/api-reference/custatevec/index.html).
+Compatibility with the target release, deterministic check results, the default
+128-row measurement output, and GPU/MPI behavior remain unverified. The Stage 1
+toolchain observations above were not refreshed by a compiler availability check.

@@ -228,6 +228,16 @@ void Runtime::reserve_gate_workspace(const cuDoubleComplex* matrix, int targets)
     gate_bytes_ = required;
     std::cerr << "rank=" << topology.rank << " reserved_gate_workspace_bytes=" << gate_bytes_ << '\n';
 }
+void Runtime::reserve_measurement_workspace() {
+    if (measurement_workspace_) return;
+    SV_TRY(custatevecGetDefaultWorkspaceSize(handle, &measurement_bytes_));
+    allocate(&measurement_workspace_, measurement_bytes_, "cuStateVec measurement workspace");
+    SV_TRY(custatevecSetWorkspace(handle, measurement_workspace_, measurement_bytes_));
+    const auto required = checked_add(checked_add(state_bytes, swap_extra_bytes_),
+        checked_add(transfer_bytes_, checked_add(gate_bytes_, measurement_bytes_)));
+    std::cerr << "rank=" << topology.rank << " measurement_workspace_bytes=" << measurement_bytes_
+              << " explicit_allocation_bytes=" << required << '\n';
+}
 void Runtime::apply_matrix(const cuDoubleComplex* matrix, const int32_t* targets, int count) {
     SV_TRY(custatevecApplyMatrix(handle, state, CUDA_C_64F, topology.local_bits, matrix, CUDA_C_64F,
               CUSTATEVEC_MATRIX_LAYOUT_ROW, 0, targets, count, nullptr, nullptr, 0,
@@ -305,6 +315,7 @@ void Runtime::close() {
     if (worker_) SV_TRY(custatevecSVSwapWorkerDestroy(handle, worker_));
     if (communicator_) SV_TRY(custatevecCommunicatorDestroy(handle, communicator_));
     SV_TRY(custatevecDestroy(handle));
+    if (measurement_workspace_) CUDA_TRY(cudaFree(measurement_workspace_));
     if (gate_workspace_) CUDA_TRY(cudaFree(gate_workspace_));
     if (transfer_) CUDA_TRY(cudaFree(transfer_));
     if (swap_extra_) CUDA_TRY(cudaFree(swap_extra_));
