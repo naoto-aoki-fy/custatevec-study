@@ -14,6 +14,24 @@
 #include <stdexcept>
 
 namespace bench {
+DeviceAssignment initialize_cuda_before_mpi() {
+    // Unlike cuda_check(), this path cannot call even MPI_Initialized().
+    const auto check = [](cudaError_t status, const char* expression) {
+        if (status != cudaSuccess)
+            throw std::runtime_error(std::string(expression) + ": " + cudaGetErrorString(status));
+    };
+    int visible = 0;
+    check(cudaGetDeviceCount(&visible), "cudaGetDeviceCount");
+    const auto assignment = device_assignment::discover(visible,
+        [](const char* name) { return std::getenv(name); });
+    std::fprintf(stderr, "[pre-MPI] local_rank_source=%s local_rank=%d visible_devices=%d visible_device=%d\n",
+                 assignment.source.c_str(), assignment.local_rank, visible, assignment.device);
+    check(cudaSetDevice(assignment.device), "cudaSetDevice");
+    check(cudaFree(nullptr), "cudaFree(nullptr): initialize assigned CUDA context");
+    std::fprintf(stderr, "[pre-MPI] visible_device=%d context_initialization=succeeded\n", assignment.device);
+    return assignment;
+}
+
 [[noreturn]] void fail(const std::string& message) {
     int initialized = 0, finalized = 0, rank = -1;
     MPI_Initialized(&initialized);
@@ -105,18 +123,19 @@ bool ipc_attempt(cudaError_t status, const char* operation, std::string& reason)
 }
 }
 
-Runtime::Runtime(const Options& options, const Topology& t)
+Runtime::Runtime(const Options& options, const Topology& t, const DeviceAssignment& assignment)
     : topology(t), nqubits(options.nqubits), local_elements(std::uint64_t{1} << t.local_bits),
       state_bytes(checked_multiply(local_elements, sizeof(cuDoubleComplex))),
       logical_to_physical(static_cast<std::size_t>(options.nqubits)), options_(options) {
     static_assert(sizeof(std::size_t) >= 8, "A 64-bit host is required");
     static_assert(sizeof(custatevecIndex_t) >= 8, "64-bit cuStateVec indices are required");
-    int visible = 0;
-    CUDA_TRY(cudaGetDeviceCount(&visible));
-    if (visible == 0) fail("No visible CUDA GPU");
-    const int device = visible == 1 ? 0 : t.local_rank;
-    if (device >= visible) fail("GPU oversubscription: node-local rank exceeds visible GPU count");
-    CUDA_TRY(cudaSetDevice(device));
+    device_assignment::validate(assignment, t.local_rank);
+    const int device = assignment.device;
+    int current_device = -1;
+    CUDA_TRY(cudaGetDevice(&current_device));
+    if (current_device != device) fail("Current CUDA device changed during MPI initialization");
+    std::fprintf(stderr, "rank=%d local_rank=%d visible_device=%d pre_mpi_assignment=validated local_rank_source=%s\n",
+                 t.rank, t.local_rank, device, assignment.source.c_str());
     cudaDeviceProp properties{};
     CUDA_TRY(cudaGetDeviceProperties(&properties, device));
     int ipc_events = 0;

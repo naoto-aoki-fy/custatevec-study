@@ -79,13 +79,77 @@ communicators. This project links the site's MPI directly through config.mk.
 Newer standard-MPI-ABI communicator enums are deliberately not required by this
 baseline; standard-ABI-only installations need a compatible external plugin.
 
-Node-local rank is discovered with `MPI_Comm_split_type(MPI_COMM_TYPE_SHARED)`.
-With one visible GPU a process selects visible ordinal 0. With multiple visible
-GPUs it selects its node-local rank. UUIDs are exchanged within the node to reject
+Each process selects its assigned CUDA GPU and explicitly initializes its context
+with checked `cudaSetDevice()` and `cudaFree(nullptr)` calls **before `MPI_Init()`**,
+so MPI/UCX initialization starts with the intended context already initialized.
+The small initialization helper uses no MPI calls, including on failure. Early
+errors print to stderr and exit nonzero without `MPI_Abort()`; the launcher must
+terminate other ranks if one exits before joining MPI. Even `--help` requires a
+valid early GPU assignment.
+
+Before MPI, local rank comes from `OMPI_COMM_WORLD_LOCAL_RANK` when present,
+otherwise `SLURM_LOCALID`. Open MPI takes precedence because a surrounding Slurm
+task's local ID may differ from the ranks launched by `mpiexec`. The Slurm fallback
+requires a direct Slurm launch where each task corresponds to one MPI process;
+it is not a reliable rank source for arbitrary nested launchers. No other MPI
+implementation's environment variables are inferred. The selected variable must
+contain only decimal digits and fit a nonnegative `int`; empty or malformed
+values fail rather than falling back to another source.
+
+With one visible GPU a process selects visible ordinal 0, even when its local
+rank is greater than zero or unavailable. With multiple visible GPUs it selects
+its launcher-provided local rank; a missing rank or a rank outside the visible
+device count fails before MPI. For other launchers, expose one distinct GPU per
+process through the scheduler or a launcher wrapper, or add support for a
+documented process-local rank source before using multiple visible GPUs. Global
+rank and physical GPU ordinals are never substituted for local rank. All CUDA
+ordinals respect `CUDA_VISIBLE_DEVICES` and scheduler-enforced visibility.
+
+After MPI starts, topology is still discovered with
+`MPI_Comm_split_type(MPI_COMM_TYPE_SHARED)`. `Runtime` receives the early assignment
+from `main`, checks any supplied local rank against the actual shared-node rank
+(also for single-visible-GPU processes), verifies the device-selection policy
+and current CUDA device, and reuses that device without calling `cudaSetDevice()`
+again. A mismatch aborts through the existing MPI error path before GPU resource
+setup. Stderr reports the early rank source, selected visible device, context
+initialization result, and successful post-MPI assignment verification. These
+messages are outside benchmark timing and do not change stdout CSV.
+
+UUIDs are exchanged within the node to reject
 duplicate assignments, including duplicate assignments hidden by per-rank device
 visibility. A rank count must be a power of two, and `N > log2(P)`. Rank ordering
 across nodes does not need to be contiguous. Set GPU visibility through the
 launcher; do not oversubscribe GPUs.
+
+### Deferred initialization-order checks
+
+Builds, tests, and validation for this change were skipped at the user's request.
+The focused host test source covers rank parsing, Open MPI precedence, direct
+Slurm ranks, shared and per-process visibility, absent/malformed rank information,
+oversubscription, and post-MPI assignment mismatches. It has not been compiled or
+run. Commands for later execution in the appropriate environments:
+
+```sh
+c++ -std=c++17 -Iinclude tests/device_assignment_test.cpp -o /tmp/device_assignment_test
+/tmp/device_assignment_test
+make CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
+mpiexec -n 1 ./custatevec_bench --smoke-check --nqubits 8
+mpiexec -n 4 --map-by ppr:4:node ./custatevec_bench --smoke-check --nqubits 8
+# Two allocated nodes, one rank per node: the swap crosses the network.
+mpiexec -n 2 --map-by ppr:1:node ./custatevec_bench --smoke-check --nqubits 8
+# Original multi-node regression, within an allocation with four GPUs per node.
+mpiexec -n 8 --oversubscribe --map-by ppr:4:node --bind-to none \
+  ./custatevec_bench --job hadamard --nqubits 33 --repeats 1 --warmup 0 --seed 1
+```
+
+Repeat with scheduler isolation exposing one distinct GPU per process and with
+direct Slurm launches using the site's CUDA-aware MPI/PMI configuration. Check
+stderr for matching early and actual local ranks, context success, assignment
+verification, and distinct GPU UUIDs within each node. Retain stdout/stderr and
+exit status. Missing rank with multiple visible GPUs must fail before MPI;
+stale or inconsistent supplied ranks must fail during post-MPI setup. Actual
+multi-node transport and the GB200 UCX crash remain unverified: initialization
+order is a suspected cause, and this change does not establish a resolution.
 
 ## Explicit same-node P2P
 

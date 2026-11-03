@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 #include <custatevec.h>
+#include "device_assignment.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,9 @@ struct Options {
 Options parse_options(int argc, char** argv);
 void print_help();
 
+// Throws on failure; must never use the MPI-aware fail()/CUDA_TRY path.
+DeviceAssignment initialize_cuda_before_mpi();
+
 // World rank is the contiguous sub-state-vector index, independent of node layout.
 struct Topology {
     int rank = 0, ranks = 1, local_rank = 0, local_ranks = 1;
@@ -58,7 +62,7 @@ std::size_t checked_multiply(std::uint64_t count, std::size_t bytes);
 
 class Runtime {
 public:
-    Runtime(const Options& options, const Topology& topology);
+    Runtime(const Options& options, const Topology& topology, const DeviceAssignment& assignment);
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
     // Cleanup is explicit: errors must abort the world before MPI_Finalize.

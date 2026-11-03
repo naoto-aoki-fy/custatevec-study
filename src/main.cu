@@ -100,6 +100,13 @@ void print_help() {
 } // namespace bench
 
 int main(int argc, char** argv) {
+    bench::DeviceAssignment assignment;
+    try {
+        assignment = bench::initialize_cuda_before_mpi();
+    } catch (const std::exception& error) {
+        std::cerr << "[pre-MPI] context_initialization=failed fatal: " << error.what() << '\n';
+        return EXIT_FAILURE;
+    }
     const int initialized = MPI_Init(&argc, &argv);
     if (initialized != MPI_SUCCESS) {
         std::cerr << "MPI_Init failed\n";
@@ -125,7 +132,7 @@ int main(int argc, char** argv) {
             bench::Topology topology(options.nqubits);
             // Reject placeholders before allocating a production-size state or emitting CSV.
             auto job = checking ? nullptr : bench::make_job(options.job);
-            bench::Runtime runtime(options, topology);
+            bench::Runtime runtime(options, topology, assignment);
             if (options.smoke) runtime.smoke_check();
             else if (options.check_hadamard) bench::check_hadamard(runtime);
             else if (options.check_measure) bench::check_measure(runtime);
