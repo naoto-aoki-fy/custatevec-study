@@ -26,4 +26,5 @@ exec "${MPIEXEC:-mpiexec}" "${NP_FLAG:--n}" "${RANKS:-2}" \
     "${launcher_args[@]}" "${BENCHMARK:-$project_dir/custatevec_bench}" \
     --job "$job" --nqubits "${NQUBITS:-31}" --repeats "${REPEATS:-128}" \
     --warmup "${WARMUP:-0}" --seed "${SEED:-1}" \
+    --p2p "${P2P:-auto}" \
     "${communicator_args[@]}" "$@"

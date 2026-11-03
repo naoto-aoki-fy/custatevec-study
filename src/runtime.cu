@@ -91,6 +91,22 @@ custatevecCommunicatorType_t communicator_type(const Options& options) {
 #endif
 }
 const cuDoubleComplex x_matrix[4] = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 0.0}, {0.0, 0.0}};
+
+// Only capability/resource mapping failures are eligible for MPI fallback.
+// Bad handles/arguments, allocation failures, and asynchronous CUDA failures
+// indicate a programming or runtime failure and must abort the world.
+bool ipc_attempt(cudaError_t status, const char* operation, std::string& reason) {
+    if (status == cudaSuccess) return true;
+    if (status != cudaErrorNotSupported && status != cudaErrorPeerAccessUnsupported &&
+        status != cudaErrorTooManyPeers && status != cudaErrorMapBufferObjectFailed &&
+        status != cudaErrorOperatingSystem)
+        cuda_check(status, operation);
+    reason = std::string(operation) + ": " + cudaGetErrorString(status);
+    // Consume the handled API error so later kernel launch checks do not see it.
+    const auto pending = cudaGetLastError();
+    if (pending != cudaSuccess && pending != status) cuda_check(pending, operation);
+    return false;
+}
 }
 
 Runtime::Runtime(const Options& options, const Topology& t)
@@ -107,6 +123,9 @@ Runtime::Runtime(const Options& options, const Topology& t)
     CUDA_TRY(cudaSetDevice(device));
     cudaDeviceProp properties{};
     CUDA_TRY(cudaGetDeviceProperties(&properties, device));
+    int ipc_events = 0;
+    CUDA_TRY(cudaDeviceGetAttribute(&ipc_events, cudaDevAttrIpcEventSupport, device));
+    ipc_capable_ = properties.unifiedAddressing && ipc_events;
     // Device ordinals are process-local; compare actual UUIDs across the shared node.
     constexpr int uuid_bytes = sizeof(properties.uuid.bytes);
     std::vector<char> uuids(checked_multiply(t.local_ranks, uuid_bytes));
@@ -132,7 +151,15 @@ Runtime::Runtime(const Options& options, const Topology& t)
                       << (type == CUSTATEVEC_COMMUNICATOR_TYPE_OPENMPI ? "openmpi" :
                           type == CUSTATEVEC_COMMUNICATOR_TYPE_MPICH ? "mpich" : "external")
                       << '\n';
-        CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventInterprocess | cudaEventDisableTiming));
+        if (ipc_capable_) {
+            std::string reason;
+            ipc_capable_ = ipc_attempt(cudaEventCreateWithFlags(&event_,
+                cudaEventDisableTiming | cudaEventInterprocess), "cudaEventCreateWithFlags(IPC)", reason);
+            if (!ipc_capable_)
+                std::cerr << "rank=" << t.rank << " P2P event unavailable: " << reason << '\n';
+        }
+        if (!ipc_capable_)
+            CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventDisableTiming));
         std::size_t minimum_transfer = 0;
         SV_TRY(custatevecSVSwapWorkerCreate(handle, &worker_, communicator_, state, t.rank,
                                             event_, CUDA_C_64F, transfer_stream_, &swap_extra_bytes_, &minimum_transfer));
@@ -152,6 +179,123 @@ Runtime::Runtime(const Options& options, const Topology& t)
     // This smoke matrix is also a workspace-query example for later workload stages.
     if (options.smoke) reserve_gate_workspace(x_matrix, 1);
     report_metadata(options, device, properties);
+    setup_p2p(options);
+}
+
+void Runtime::setup_p2p(const Options& options) {
+    const auto& t = topology;
+    std::cerr << "rank=" << t.rank << " requested_p2p=" << options.p2p
+              << " p2p_transport=explicit-CUDA-IPC (not a link-type claim)"
+              << " other_peers=CUDA-aware-MPI\n";
+    if (options.p2p == "off") {
+        std::cerr << "rank=" << t.rank << " registered_p2p_peers=[] reason=off;"
+                  << " communicator may still use CUDA IPC internally\n";
+        return;
+    }
+
+    // The actual workloads swap one local/global bit at a time, hence their
+    // remote endpoint is rank XOR (1 << global-rank-bit). Measurement has no
+    // swaps; the smoke check only uses the lowest global bit. Never infer node
+    // membership from these indices: shared is the authority for locality.
+    const auto needed = [&](int peer) {
+        const unsigned delta = static_cast<unsigned>(t.rank ^ peer);
+        if (options.smoke) return delta == 1;
+        return (options.job == "hadamard" || options.check_hadamard) &&
+               delta != 0 && (delta & (delta - 1)) == 0;
+    };
+    std::vector<int> ranks(t.local_ranks);
+    MPI_TRY(MPI_Allgather(&t.rank, 1, MPI_INT, ranks.data(), 1, MPI_INT, t.shared));
+    bool has_peer = false;
+    for (int peer : ranks) has_peer = has_peer || needed(peer);
+
+    cudaIpcMemHandle_t memory_handle{};
+    cudaIpcEventHandle_t event_handle{};
+    std::string export_reason = "no same-node swap peers needed by workload";
+    int exported = 0;
+    if (has_peer) {
+        export_reason = "GPU lacks unified addressing or IPC event support";
+        if (ipc_capable_ &&
+            ipc_attempt(cudaIpcGetMemHandle(&memory_handle, state), "cudaIpcGetMemHandle", export_reason) &&
+            ipc_attempt(cudaIpcGetEventHandle(&event_handle, event_), "cudaIpcGetEventHandle", export_reason))
+            exported = 1;
+        if (!exported)
+            std::cerr << "rank=" << t.rank << " P2P export unavailable: " << export_reason << '\n';
+    }
+    std::vector<int> exports(t.local_ranks);
+    std::vector<cudaIpcMemHandle_t> memories(t.local_ranks);
+    std::vector<cudaIpcEventHandle_t> events(t.local_ranks);
+    MPI_TRY(MPI_Allgather(&exported, 1, MPI_INT, exports.data(), 1, MPI_INT, t.shared));
+    MPI_TRY(MPI_Allgather(&memory_handle, sizeof(memory_handle), MPI_BYTE,
+                          memories.data(), sizeof(memory_handle), MPI_BYTE, t.shared));
+    MPI_TRY(MPI_Allgather(&event_handle, sizeof(event_handle), MPI_BYTE,
+                          events.data(), sizeof(event_handle), MPI_BYTE, t.shared));
+
+    std::vector<void*> pointers(t.local_ranks, nullptr);
+    std::vector<cudaEvent_t> imports(t.local_ranks, nullptr);
+    std::vector<int> usable(t.local_ranks, 0);
+    std::vector<std::string> reasons(t.local_ranks);
+    for (int i = 0; i < t.local_ranks; ++i) {
+        if (!needed(ranks[i])) continue;
+        if (!exported || !exports[i]) {
+            reasons[i] = !exported ? export_reason : "peer could not export memory/event (see peer diagnostic)";
+            continue;
+        }
+        // IPC import resolves the exporting GPU even if scheduler isolation
+        // hides it from this process. Never use the peer's device ordinal.
+        if (!ipc_attempt(cudaIpcOpenMemHandle(&pointers[i], memories[i], cudaIpcMemLazyEnablePeerAccess),
+                         "cudaIpcOpenMemHandle", reasons[i])) continue;
+        if (!ipc_attempt(cudaIpcOpenEventHandle(&imports[i], events[i]),
+                         "cudaIpcOpenEventHandle", reasons[i])) continue;
+        usable[i] = 1;
+    }
+    // Rows are importing local ranks, columns are exporting local ranks.
+    std::vector<int> outcomes(checked_multiply(t.local_ranks, static_cast<std::size_t>(t.local_ranks)));
+    MPI_TRY(MPI_Allgather(usable.data(), t.local_ranks, MPI_INT, outcomes.data(),
+                          t.local_ranks, MPI_INT, t.shared));
+    int missing = 0;
+    for (int i = 0; i < t.local_ranks; ++i) {
+        if (!needed(ranks[i])) continue;
+        const bool mutual = usable[i] &&
+            outcomes[static_cast<std::size_t>(i) * t.local_ranks + t.local_rank];
+        if (mutual) {
+            p2p_states_.push_back(pointers[i]);
+            p2p_ranks_.push_back(static_cast<int32_t>(ranks[i]));
+            p2p_events_.push_back(imports[i]);
+        } else {
+            missing = 1;
+            if (imports[i]) CUDA_TRY(cudaEventDestroy(imports[i]));
+            if (pointers[i]) CUDA_TRY(cudaIpcCloseMemHandle(pointers[i]));
+            std::cerr << "rank=" << t.rank << " peer_world_rank=" << ranks[i]
+                      << " path=CUDA-aware-MPI fallback_reason="
+                      << (usable[i] ? "reverse import unavailable (see peer diagnostic)" : reasons[i]) << '\n';
+        }
+    }
+    // Every world rank participates, including single-rank nodes and nodes
+    // with no required pairs. Fail before registration/timing, never by return
+    // into collective cleanup while another rank is still in setup.
+    int any_missing = 0;
+    MPI_TRY(MPI_Allreduce(&missing, &any_missing, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
+    if (options.p2p == "required" && any_missing) {
+        // No worker has used imports yet. Release even successful imports on
+        // the failure path before coherently aborting; exporters remain alive.
+        for (auto event : p2p_events_) CUDA_TRY(cudaEventDestroy(event));
+        for (auto pointer : p2p_states_) CUDA_TRY(cudaIpcCloseMemHandle(pointer));
+        MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
+        fail("--p2p required: a needed same-node swap pair is unavailable");
+    }
+    if (!p2p_ranks_.empty())
+        SV_TRY(custatevecSVSwapWorkerSetSubSVsP2P(handle, worker_, p2p_states_.data(),
+                  p2p_ranks_.data(), p2p_events_.data(), static_cast<uint32_t>(p2p_ranks_.size())));
+    MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
+    std::ostringstream peers;
+    peers << "rank=" << t.rank << " registered_p2p_peer_world_ranks=[";
+    for (std::size_t i = 0; i < p2p_ranks_.size(); ++i) {
+        if (i) peers << ',';
+        peers << p2p_ranks_[i];
+    }
+    peers << "] scope=workload-swap-peers";
+    if (!has_peer) peers << " reason=no-same-node-swap-peers-needed";
+    std::cerr << peers.str() << '\n';
 }
 
 void Runtime::allocate(void** pointer, std::size_t bytes, const char* purpose) {
@@ -324,6 +468,12 @@ void Runtime::close() {
     MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
     if (scheduler_) SV_TRY(custatevecDistIndexBitSwapSchedulerDestroy(handle, scheduler_));
     if (worker_) SV_TRY(custatevecSVSwapWorkerDestroy(handle, worker_));
+    // All workers must stop using exports before any process closes imports.
+    MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
+    for (auto event : p2p_events_) CUDA_TRY(cudaEventDestroy(event));
+    for (auto pointer : p2p_states_) CUDA_TRY(cudaIpcCloseMemHandle(pointer));
+    // Only now may exporting ranks release their local event/state allocation.
+    MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
     if (communicator_) SV_TRY(custatevecCommunicatorDestroy(handle, communicator_));
     SV_TRY(custatevecDestroy(handle));
     if (measurement_workspace_) CUDA_TRY(cudaFree(measurement_workspace_));

@@ -30,7 +30,7 @@ Options parse_options(int argc, char** argv) {
         if (key == "--check-measure") { o.check_measure = true; continue; }
         if (key != "--job" && key != "--nqubits" && key != "--repeats" &&
             key != "--warmup" && key != "--seed" && key != "--communicator" &&
-            key != "--communicator-library")
+            key != "--communicator-library" && key != "--p2p")
             throw std::runtime_error("Unknown option: " + key);
         if (++i == argc) throw std::runtime_error("Missing value for " + key);
         const std::string value = argv[i];
@@ -42,6 +42,7 @@ Options parse_options(int argc, char** argv) {
         }
         if (key == "--communicator") { o.communicator = value; continue; }
         if (key == "--communicator-library") { o.communicator_library = value; continue; }
+        if (key == "--p2p") { o.p2p = value; continue; }
         const auto n = number(value, key);
         if (key == "--seed") { o.seed = n; continue; }
         if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
@@ -59,6 +60,8 @@ Options parse_options(int argc, char** argv) {
     // Signed cuStateVec indices have 63 value bits. Byte arithmetic is checked separately.
     if (o.nqubits < 1 || o.nqubits > 62) throw std::runtime_error("--nqubits must be in [1,62]");
     if (o.repeats < 1) throw std::runtime_error("--repeats must be positive");
+    if (o.p2p != "auto" && o.p2p != "off" && o.p2p != "required")
+        throw std::runtime_error("--p2p must be auto, off, or required");
     if (o.communicator != "auto" && o.communicator != "openmpi" &&
         o.communicator != "mpich" && o.communicator != "external")
         throw std::runtime_error("--communicator must be auto, openmpi, mpich, or external");
@@ -74,6 +77,9 @@ void print_help() {
               << "  --seed S          reproducible uint64 seed (default 1)\n"
               << "  --communicator auto|openmpi|mpich|external\n"
               << "  --communicator-library PATH  MPI library or external communicator plugin\n"
+              << "  --p2p auto|off|required  explicit same-node CUDA IPC P2P (default auto)\n"
+              << "    off uses only the communicator; MPI may still use CUDA IPC internally\n"
+              << "    required aborts before timing if a needed same-node swap pair is unavailable\n"
               << "Hadamard, full-register measurement, and separate untimed checks are implemented.\n";
 }
 } // namespace bench

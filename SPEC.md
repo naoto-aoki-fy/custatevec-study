@@ -80,6 +80,26 @@ Use 64-bit sizes and indices, checked allocation-size arithmetic, and explicit m
 
 Handle MPI, CUDA, and cuStateVec failures coherently so other ranks do not remain blocked indefinitely.
 
+Explicit P2P uses the classic `custatevecSVSwapWorkerSetSubSVsP2P` API with
+CUDA IPC imports of the peer state allocation and the event passed to its swap
+worker. `--p2p auto|off|required` defaults to auto. Auto registers only mutually
+usable same-node workload swap peers and falls back to the CUDA-aware MPI
+communicator for other pairs. Off skips explicit registration; MPI may still
+use IPC internally. Required aborts coherently before timing if any same-node
+pair needed by the workload lacks mutual P2P; inter-node pairs remain on MPI
+and no same-node swap peers is valid. Hadamard/check-hadamard need rank XOR
+each global-rank bit, smoke needs rank XOR 1, and measurement needs no swaps.
+
+Exchange identities, handles, and directional setup outcomes within the actual
+shared-node communicator, without assuming contiguous world-rank placement.
+Use local GPU capabilities and IPC imports, never another process's device
+ordinal or a single-visible-device heuristic. Keep only pairs with usable
+memory and events in both directions; release rejected partial imports.
+Expected unsupported/mapping/peer-resource/OS IPC failures diagnose fallback;
+unrelated CUDA errors abort. Report requested mode, registered world ranks,
+GPU identities, and fallback reasons to stderr without inferring NVLink.
+Do all setup outside repetitions and preserve the transfer-workspace policy.
+
 ## Timing contract
 
 Allocate reusable state storage, handles, descriptors, and workspaces outside measured repetitions.
@@ -155,6 +175,14 @@ collectives and swap schedule. During close, finish all GPU work and barrier
 before destroying swap resources. Destroy the worker before its transfer
 stream, retain its state/workspaces/event/communicator until then, and destroy
 both streams. Check errors through the existing world-aborting handlers.
+
+With explicit P2P, imported pointers/events remain alive through worker
+destruction. After the completion barrier, destroy workers on all ranks and
+barrier again before closing imports with cudaIpcCloseMemHandle and destroying
+imported events. Barrier after closing imports, before freeing exported state
+allocations or destroying local events. Required-mode setup rejection closes
+all imports before coordinated MPI_Abort. Fatal unexpected failures abort
+without entering normal collective cleanup.
 
 No installed cuStateVec headers or release documentation were found in the
 project, `/usr/local/include`, or `/opt` for this fix. The online references

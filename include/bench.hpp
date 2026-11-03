@@ -37,6 +37,7 @@ struct Options {
     bool explicit_nqubits = false;
     std::string communicator = "auto";
     std::string communicator_library;
+    std::string p2p = "auto";
 };
 Options parse_options(int argc, char** argv);
 void print_help();
@@ -82,6 +83,12 @@ private:
     void allocate(void** pointer, std::size_t bytes, const char* purpose);
     void report_metadata(const Options& options, int device, const cudaDeviceProp& properties);
     void expect_basis(std::uint64_t index);
+    void setup_p2p(const Options& options);
+    // Retained until the worker is destroyed; these are IPC imports, not allocations.
+    std::vector<void*> p2p_states_;
+    std::vector<int32_t> p2p_ranks_;
+    std::vector<cudaEvent_t> p2p_events_;
+    bool ipc_capable_ = false;
     custatevecCommunicatorDescriptor_t communicator_ = nullptr;
     custatevecDistIndexBitSwapSchedulerDescriptor_t scheduler_ = nullptr;
     custatevecSVSwapWorkerDescriptor_t worker_ = nullptr;
