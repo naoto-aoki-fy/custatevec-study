@@ -126,6 +126,11 @@ Runtime::Runtime(const Options& options, const Topology& t)
         const auto type = communicator_type(options);
         const char* library = options.communicator_library.empty() ? nullptr : options.communicator_library.c_str();
         SV_TRY(custatevecCommunicatorCreate(handle, &communicator_, type, library));
+        if (t.rank == 0)
+            std::cerr << "resolved_custatevec_communicator="
+                      << (type == CUSTATEVEC_COMMUNICATOR_TYPE_OPENMPI ? "openmpi" :
+                          type == CUSTATEVEC_COMMUNICATOR_TYPE_MPICH ? "mpich" : "external")
+                      << '\n';
         CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventInterprocess | cudaEventDisableTiming));
         std::size_t minimum_transfer = 0;
         SV_TRY(custatevecSVSwapWorkerCreate(handle, &worker_, communicator_, state, t.rank,
@@ -226,7 +231,10 @@ void Runtime::reserve_gate_workspace(const cuDoubleComplex* matrix, int targets)
     gate_bytes_ = 0;
     allocate(&gate_workspace_, required, "complex128 gate workspace");
     gate_bytes_ = required;
-    std::cerr << "rank=" << topology.rank << " reserved_gate_workspace_bytes=" << gate_bytes_ << '\n';
+    const auto total = checked_add(checked_add(state_bytes, swap_extra_bytes_),
+        checked_add(transfer_bytes_, checked_add(gate_bytes_, measurement_bytes_)));
+    std::cerr << "rank=" << topology.rank << " reserved_gate_workspace_bytes=" << gate_bytes_
+              << " explicit_allocation_bytes=" << total << '\n';
 }
 void Runtime::reserve_measurement_workspace() {
     if (measurement_workspace_) return;

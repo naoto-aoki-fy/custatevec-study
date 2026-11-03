@@ -401,5 +401,11 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
         std::cout << "job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits\n";
     for (int i = 0; i < options.repeats; ++i)
         one(static_cast<std::uint64_t>(i), true, i + 1);
+    // Detect buffered output errors while MPI is still active, so peers abort
+    // coherently rather than reporting success with a truncated CSV file.
+    if (runtime.topology.rank == 0) {
+        std::cout.flush();
+        if (!std::cout) fail("CSV output flush failed");
+    }
 }
 } // namespace bench

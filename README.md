@@ -1,6 +1,6 @@
 # Distributed cuStateVec benchmark
 
-Stages 1 through 3 provide a C++17/CUDA/MPI runtime, a reusable benchmark timing
+The implementation provides a C++17/CUDA/MPI runtime, a reusable benchmark timing
 harness, independent Hadamard and full-register measurement benchmarks, and
 opt-in untimed small-state checks.
 The common contract is recorded in [SPEC.md](SPEC.md).
@@ -122,7 +122,8 @@ mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 31 --repeats 128 --warm
 mpiexec -n 2 ./custatevec_bench --job measure --nqubits 31 --repeats 128 --warmup 0 --seed 1
 ```
 
-Both commands are implemented and run as separate benchmark jobs.
+These commands select the implemented jobs in separate MPI invocations; they
+are examples, not recorded execution results.
 
 Workloads implement `Job` in `include/bench.hpp` and are connected through
 `make_job` in `src/benchmark.cu`. `prepare` allocates reusable workspaces/descriptors;
@@ -140,7 +141,7 @@ job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits
 ```
 
 Iteration numbering starts at 1; measurement bits are empty for Hadamard and are
-be ordered q[N-1]..q[0] for measurement. Metadata goes to stderr: versions, GPU
+ordered q[N-1]..q[0] for measurement. Metadata goes to stderr: versions, GPU
 identities, rank mapping, explicit allocation bytes, seed, warm-up count, and
 timing scope. Memory capacity checks use current free GPU memory after context
 and handle creation, then query and account for communication and operation
@@ -264,6 +265,167 @@ Fixtures include nonunit norms and complex phases. Every collapse checks the
 complete local state on each rank, exactly one surviving global amplitude,
 retained phase, global unit norm, and outcome agreement across all ranks.
 These deterministic fixtures do not use a statistical sampling assertion.
+
+## Independent launch scripts and cluster placement
+
+The executable requires an explicit job selection. Each command below is one
+invocation and produces its own CSV file. The scripts need Bash and default to
+two ranks, N=31, 128 measured repetitions, no warm-ups, and seed 1:
+
+```sh
+bash scripts/launch-hadamard.sh > hadamard.csv 2> hadamard.log
+bash scripts/launch-measure.sh > measure.csv 2> measure.log
+```
+
+Set `MPIEXEC` to one launcher executable, `NP_FLAG` to its rank-count flag
+(default `-n`), `RANKS`, `BENCHMARK`, `NQUBITS`, `REPEATS`, `WARMUP`, and `SEED`
+as needed. `COMMUNICATOR` and `COMMUNICATOR_LIBRARY` set the corresponding
+benchmark options. Pass launcher arguments before `--` and benchmark arguments
+after it. Arguments retain their boundaries; no environment value is evaluated
+as shell code. Do not pass another `--job` option.
+
+Single-node examples assume Open MPI, two distinct visible GPUs, and no CPU
+binding (replace the placement flags for other MPI implementations):
+
+```sh
+RANKS=2 bash scripts/launch-hadamard.sh --map-by ppr:2:node --bind-to none > hadamard.csv 2> hadamard.log
+RANKS=2 bash scripts/launch-measure.sh --map-by ppr:2:node --bind-to none > measure.csv 2> measure.log
+```
+
+Multi-node examples assume Open MPI, passwordless/site-managed remote launch,
+the same binary and libraries at the same paths on both hosts, and a hostfile
+with two allocated nodes (one available slot each). Set `HOSTFILE` to that file.
+Each node must expose its assigned GPU; the MPI installation must support the
+inter-node CUDA-aware transport selected by the site's environment.
+
+```sh
+RANKS=2 bash scripts/launch-hadamard.sh --hostfile "$HOSTFILE" --map-by ppr:1:node --bind-to none > hadamard.csv 2> hadamard.log
+RANKS=2 bash scripts/launch-measure.sh --hostfile "$HOSTFILE" --map-by ppr:1:node --bind-to none > measure.csv 2> measure.log
+```
+
+For Slurm, submit the following commands as **separate** batch jobs inside
+allocations requesting two nodes, one task and one GPU per node. Supply the
+partition, account, wall time, GPU request syntax, and environment loading in
+your own batch wrapper. These examples assume Slurm PMIx support compatible
+with the application's MPI; `--mpi=pmix` is site dependent:
+
+```sh
+MPIEXEC=srun RANKS=2 bash scripts/launch-hadamard.sh --mpi=pmix --nodes=2 --ntasks-per-node=1 > hadamard.csv 2> hadamard.log
+MPIEXEC=srun RANKS=2 bash scripts/launch-measure.sh --mpi=pmix --nodes=2 --ntasks-per-node=1 > measure.csv 2> measure.log
+```
+
+Scheduler GPU isolation that gives each task one visible device is supported.
+The scripts do not request allocations or choose hosts, partitions, accounts,
+CUDA visibility, transports, or scheduler time limits automatically.
+
+## Distribution, CSV, and memory reference
+
+For P=2^g world ranks, let L=N-g. World rank r owns physical indices
+`r * 2^L + i`, `0 <= i < 2^L`. Local bits are the low L bits, rank bits the
+high g bits, and bit 0 is least significant. Logical and physical positions
+start equal each repetition; Hadamard localization updates both owners in the
+mapping. No physical restoration is required. Measurement uses the complete
+physical outcome and translates it to logical order before reporting it.
+
+Measurement initialization uses amplitude `2^(-N/2)` on every rank, giving
+global squared norm 1 and local squared norm 1/P, subject to FP64 rounding.
+It does not normalize each sub-state-vector to 1. The measured path recomputes
+the actual masses rather than assuming these analytic values.
+
+| CSV column | Meaning |
+| --- | --- |
+| `job` | Selected `hadamard` or `measure` operation |
+| `iteration` | One-based measured repetition; excludes warm-ups |
+| `nqubits` | Total logical qubits across the distributed state |
+| `mpi_ranks` | Number of world ranks sharing that state |
+| `elapsed_seconds` | Maximum of rank-local `MPI_Wtime` intervals, in seconds |
+| `measurement_bits` | Exactly N logical bits q[N-1]..q[0] for measurement; empty for Hadamard |
+
+With `--job` selected and other options omitted, rank 0 writes one header and
+128 data rows. MPI launcher output must not be merged into stdout. Capture
+stderr separately. A nonzero exit status invalidates a partial output file.
+
+State storage alone is `16 * 2^(N-g)` bytes per GPU, or `16 * 2^N` globally.
+At N=31 this is 32 GiB globally: 32, 16, 8, or 4 GiB per GPU for P=1,2,4,8.
+Add the queried swap workspace, a power-of-two transfer buffer at least as
+large as the worker's minimum, and the job's gate or default measurement
+workspace. The current runtime creates swap resources for both jobs when P>1,
+so measurement also needs those buffers even though it does not swap bits.
+Host measurement mass storage is 8P bytes per rank plus small bit arrays.
+CUDA contexts, MPI transport, and library internals require further memory;
+the state-size figures alone are insufficient for capacity planning. Allocation
+checks use current free device memory; allocation races can still fail and
+abort the world. Workspace sizes and explicit totals are reported to stderr.
+
+## Required API capabilities and cluster acceptance
+
+No tested numeric CUDA/cuStateVec version pair is claimed. Use a mutually
+supported CUDA toolkit, driver, host compiler, GPU, and cuQuantum release from
+the installed release's support matrix. The source specifically requires:
+
+- MPI 3.0 or newer for shared-memory communicator discovery, `MPI_UINT64_T`,
+  double collectives, and CUDA-aware device-buffer point-to-point transport.
+- A 64-bit CUDA C++17 toolchain with device UUIDs (`cudaDeviceProp::uuid`),
+  nonblocking streams, interprocess events, complex128, and double arithmetic.
+  The default NVCC command also requires `--forward-unknown-to-host-compiler`;
+  override `NVCC` and explicitly forward host options on older toolchains.
+- Classic cuStateVec with 64-bit indices, `CUDA_C_64F`,
+  `CUSTATEVEC_COMPUTE_64F`, matrix workspace queries/applications,
+  `custatevecAbs2SumArray`, `custatevecBatchMeasureWithOffset`,
+  `custatevecCollapseByBitString`, default workspace get/set, communicator
+  descriptors, distributed index-bit swap schedulers, and swap workers.
+  Sampler APIs and standard-MPI-ABI communicator enums are not required.
+
+Header ABI detection chooses a communicator family; it cannot certify the
+loaded MPI library or CUDA-aware transport. On the cluster, compare the MPI
+library version in stderr with the launcher, modules, and communicator plugin
+build. Inspect the installed headers and matching release documentation. Run
+the global-bit smoke and correctness checks across nodes before accepting
+communicator compatibility. A successful one-rank run does not exercise a
+cuStateVec communicator, and an intra-node run does not certify networking.
+
+The following are **deferred commands**, not validation results. First inspect
+the actual external config.mk. To inspect expanded compiler/linker commands
+without building, use `make -Bn CONFIG_MK=/path/to/config.mk` (GNU Make recursive
+recipes in an external configuration can still execute under `-n`). Compilation
+uses `CFLAGS_VENDOR` and `GENCODE_FLAGS`; final NVCC linking uses
+`LDFLAGS_VENDOR` and `GENCODE_FLAGS`. Configuration exports remain in effect.
+Then build using the command above without editing the generated configuration.
+
+Run all three untimed modes at P=1 and P=2 on one node. With four distinct
+GPUs, also run P=4,N=3 to exercise several global bits with only one local bit.
+Repeat at P=2 across two nodes with one GPU per rank. For example, inside a
+correctly placed allocation:
+
+```sh
+mpiexec -n 1 ./custatevec_bench --smoke-check --nqubits 8
+mpiexec -n 1 ./custatevec_bench --check-hadamard --nqubits 8
+mpiexec -n 1 ./custatevec_bench --check-measure --nqubits 8
+mpiexec -n 2 ./custatevec_bench --smoke-check --nqubits 8
+mpiexec -n 2 ./custatevec_bench --check-hadamard --nqubits 8
+mpiexec -n 2 ./custatevec_bench --check-measure --nqubits 8
+mpiexec -n 4 ./custatevec_bench --check-hadamard --nqubits 3
+mpiexec -n 4 ./custatevec_bench --check-measure --nqubits 3
+```
+
+Failure-path examples below assume GNU `timeout` and Open MPI on one node.
+Each must fail promptly with a nonzero exit and the expected diagnostic;
+timeout termination (typically 124) is a failure of the no-hang check. Adapt
+timeouts to startup cost. The memory example requests 8 TiB per rank at P=2;
+choose N so the checked byte count fits size_t but exceeds actual free memory.
+
+```sh
+timeout 60s mpiexec --oversubscribe -n 3 ./custatevec_bench --job hadamard --nqubits 8 --repeats 1
+CUDA_VISIBLE_DEVICES=0 timeout 60s mpiexec -x CUDA_VISIBLE_DEVICES -n 2 ./custatevec_bench --job measure --nqubits 8 --repeats 1
+timeout 60s mpiexec -n 2 ./custatevec_bench --job measure --nqubits 40 --repeats 1
+```
+
+The duplicate-device example must place both ranks on the same node. For the
+memory example, use distinct GPUs so duplicate detection does not mask the
+allocation check. Finally run the two production scripts separately and check
+both CSV schemas, iterations 1..128, empty Hadamard outcomes, and N-bit
+measurement outcomes. Keep commands, exit statuses, stdout, stderr, software
+versions, rank placement, and resource requests with the cluster results.
 
 ## Implementation environment
 

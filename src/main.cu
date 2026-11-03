@@ -21,6 +21,7 @@ std::uint64_t number(const std::string& text, const std::string& option) {
 }
 Options parse_options(int argc, char** argv) {
     Options o;
+    bool job_selected = false;
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         if (key == "--help") { o.help = true; continue; }
@@ -33,7 +34,12 @@ Options parse_options(int argc, char** argv) {
             throw std::runtime_error("Unknown option: " + key);
         if (++i == argc) throw std::runtime_error("Missing value for " + key);
         const std::string value = argv[i];
-        if (key == "--job") { o.job = value; continue; }
+        if (key == "--job") {
+            if (job_selected) throw std::runtime_error("Select --job exactly once");
+            job_selected = true;
+            o.job = value;
+            continue;
+        }
         if (key == "--communicator") { o.communicator = value; continue; }
         if (key == "--communicator-library") { o.communicator_library = value; continue; }
         const auto n = number(value, key);
