@@ -20,7 +20,7 @@ availability observations in the README are historical and were not refreshed.
 | Actual state and complete-register measurement | Each `MeasurementJob::measure` recomputes local norms, gathers rank masses, selects the owner, jointly samples its local bits, and combines owner bits with local bits |
 | State-dependent work stays timed | Norm calculation, rank selection, conditional local measurement, selected-amplitude mass query, and collapse are all inside execute |
 | Distributed collapse | Owner collapses all local bits using the selected actual mass; other ranks zero their state; the full physical outcome is broadcast and mapped to logical bits |
-| Completion before stop | Gates and swap worker share one stream with explicit swap ordering; the harness synchronizes the device after execute; application collectives are blocking |
+| Completion before stop | Gates use the compute stream; the swap worker uses a distinct dedicated transfer stream for P>1. Each swap waits for compute before execution and transfer completion afterward; the harness synchronizes the device after execute; application collectives are blocking |
 | Maximum rank-local interval | A local `MPI_Wtime` difference is taken before `MPI_Reduce(MPI_MAX)` |
 | Exclusions | Preparation/allocation, mapping reset, input initialization, initialization synchronization, start barrier, and CSV formatting are outside the interval; safety/error checks required by the operation remain inside execute |
 | Default CSV | Rank 0 writes one header and measured iterations 1..128; warm-ups do not write rows; final flush now detects buffered output failure before MPI cleanup |
