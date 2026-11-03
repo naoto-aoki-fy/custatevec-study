@@ -77,9 +77,9 @@ Options parse_options(int argc, char** argv) {
     if (o.help) return o;
     if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) + static_cast<int>(o.check_measure) +
         static_cast<int>(!o.job.empty()) != 1)
-        throw std::runtime_error("Select exactly one of --job hadamard, --job measure, --smoke-check, --check-hadamard, or --check-measure");
-    if (!o.job.empty() && o.job != "hadamard" && o.job != "measure")
-        throw std::runtime_error("--job must be hadamard or measure");
+        throw std::runtime_error("Select exactly one of --job hadamard, --job hadamard-reverse, --job measure, --smoke-check, --check-hadamard, or --check-measure");
+    if (!o.job.empty() && o.job != "hadamard" && o.job != "hadamard-reverse" && o.job != "measure")
+        throw std::runtime_error("--job must be hadamard, hadamard-reverse, or measure");
     // Signed cuStateVec indices have 63 value bits. Byte arithmetic is checked separately.
     if (o.nqubits < 1 || o.nqubits > 62) throw std::runtime_error("--nqubits must be in [1,62]");
     if (o.repeats < 1) throw std::runtime_error("--repeats must be positive");
@@ -93,7 +93,8 @@ Options parse_options(int argc, char** argv) {
     return o;
 }
 void print_help() {
-    std::cerr << "Usage: custatevec_bench (--job hadamard|measure | --smoke-check | --check-hadamard | --check-measure) [options]\n"
+    std::cerr << "Usage: custatevec_bench (--job hadamard|hadamard-reverse|measure | --smoke-check | --check-hadamard | --check-measure) [options]\n"
+              << "  hadamard: logical q=0..N-1; hadamard-reverse: logical q=N-1..0\n"
               << "  --nqubits N       default 31; checks default max(8,log2(ranks)+1), cap 20\n"
               << "  --repeats R       measured repetitions (default 128)\n"
               << "  --warmup W        separate warm-ups (default 0)\n"

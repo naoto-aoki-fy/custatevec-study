@@ -157,7 +157,8 @@ Runtime::Runtime(const Options& options, const Topology& t, const DeviceAssignme
     SV_TRY(custatevecCreate(&handle));
     SV_TRY(custatevecSetStream(handle, stream));
     allocate(reinterpret_cast<void**>(&state), state_bytes, "complex128 sub-state-vector");
-    if (t.ranks > 1 && (options.smoke || options.check_hadamard || options.job == "hadamard")) {
+    if (t.ranks > 1 && (options.smoke || options.check_hadamard ||
+                        options.job == "hadamard" || options.job == "hadamard-reverse")) {
         CUDA_TRY(cudaStreamCreateWithFlags(&transfer_stream_, cudaStreamNonBlocking));
         const auto type = communicator_type(options);
         const char* library = options.communicator_library.empty() ? nullptr : options.communicator_library.c_str();
@@ -285,7 +286,7 @@ void Runtime::setup_p2p(const Options& options) {
     const auto needed = [&](int peer) {
         const unsigned delta = static_cast<unsigned>(t.rank ^ peer);
         if (options.smoke) return delta == 1;
-        return (options.job == "hadamard" || options.check_hadamard) &&
+        return (options.job == "hadamard" || options.job == "hadamard-reverse" || options.check_hadamard) &&
                delta != 0 && (delta & (delta - 1)) == 0;
     };
     std::vector<int> ranks(t.local_ranks);

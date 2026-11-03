@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared implementation; invoke launch-hadamard.sh or launch-measure.sh.
+# Shared implementation; invoke launch-hadamard.sh, launch-hadamard-reverse.sh, or launch-measure.sh.
 # TRANSFER_BUFFER=auto|min and TRANSFER_BUFFER_FRACTION=(0,0.95] configure
 # the common swap workspace; measurement skips it. CLI overrides go after --.
 set -euo pipefail

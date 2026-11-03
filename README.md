@@ -153,7 +153,7 @@ order is a suspected cause, and this change does not establish a resolution.
 
 ## Explicit same-node P2P
 
-`--p2p auto|off|required` defaults to `auto` and applies to both jobs and all
+`--p2p auto|off|required` defaults to `auto` and applies to all jobs and all
 check modes:
 
 | Mode | Behavior |
@@ -164,8 +164,8 @@ check modes:
 
 The shared-node communicator exchanges world ranks and IPC handles. World rank
 remains the sub-state-vector index, including non-contiguous node placement.
-Only workload swap peers are imported: Hadamard and its asymmetric-state check
-use rank-XOR-one-bit peers, the smoke check uses rank XOR 1, and measurement has
+Only workload swap peers are imported: both Hadamard orders and their
+asymmetric-state check use rank-XOR-one-bit peers, the smoke check uses rank XOR 1, and measurement has
 no swap peers. P=1, measurement, and launches with no same-node swap pairs can
 therefore use `required` successfully without any P2P registrations.
 
@@ -226,6 +226,7 @@ Jobs run independently, including as separate scheduler jobs:
 
 ```sh
 mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 31 --repeats 128 --warmup 0 --seed 1
+mpiexec -n 2 ./custatevec_bench --job hadamard-reverse --nqubits 31 --repeats 128 --warmup 0 --seed 1
 mpiexec -n 2 ./custatevec_bench --job measure --nqubits 31 --repeats 128 --warmup 0 --seed 1
 ```
 
@@ -255,15 +256,23 @@ and handle creation, then query and account for communication and operation
 workspaces outside repetitions. The sum of explicit buffers excludes internal
 CUDA/MPI/library allocations, which reduce the free memory reported by CUDA.
 
-## Hadamard workload (Stage 2)
+## Hadamard workloads (Stage 2)
 
 Each repetition fully reinitializes the distributed state to |0> and resets the
 logical-to-physical mapping to identity before timing. It applies H to logical
-qubits q=0,1,...,N-1 using exactly N separate `custatevecApplyMatrix` calls on
+qubits q=0,1,...,N-1 for `--job hadamard`, or q=N-1,N-2,...,0 for
+`--job hadamard-reverse`, using exactly N separate `custatevecApplyMatrix` calls on
 every rank (31 at the production default). The explicit row-major matrix is
 `(1/sqrt(2)) * [[1,1],[1,-1]]`, stored as complex128 and applied with FP64
 computation, one target, and no controls. Gates are never fused; initialization
 is not used as a substitute for the gate sequence.
+
+Both jobs share initialization, workspace preparation, and gate application.
+Reverse order refers to logical indices, regardless of their changing physical
+positions. Their final logical states agree, but their swap sequences and timing
+can differ. Both use the same swap resources and `--p2p auto|off|required` peer
+policy (rank XOR each global-rank bit). CSV records the selected job name and
+leaves `measurement_bits` empty for both orders.
 
 When a logical target occupies a global physical bit, the deterministic policy
 swaps that bit with **physical bit 0** using the distributed scheduler and swap
@@ -311,14 +320,46 @@ mpiexec -n 4 ./custatevec_bench --check-hadamard --nqubits 3
 
 `--check-hadamard` is a separate untimed mode with no CSV output. Its default is
 max(8, log2(P)+1) qubits, capped at 20 total qubits. It checks two independently
-initialized all-H-on-|0> runs against the normalized uniform state, every
-individual logical target on a normalized asymmetric complex input, and the
-complete ordered sequence on that input against an independent CPU pairwise
-reference. It interprets every distributed amplitude through the retained
-mapping, reduces maximum complex amplitude error and FP64 norm across MPI ranks,
+initialized all-H-on-|0> runs **for each order** against the normalized uniform
+state, every individual logical target on a normalized asymmetric complex input, and the
+complete sequence in both orders on that input against an independent CPU pairwise
+reference. It explicitly verifies each logical target and the gate count, and
+compares every sequence prefix to the CPU reference so that the common final
+state cannot hide an incorrect order. It interprets every distributed amplitude
+through the retained mapping, reduces maximum complex amplitude error and FP64 norm across MPI ranks,
 and requires error and norm deviation at most 1e-11. Use P>1 to exercise global
 targets and the site's launcher to cover multiple nodes. These checks run only
 when explicitly selected, never as part of measured repetitions.
+
+For both orders, exercise single rank, distributed targets, and the one-local-bit
+case under each P2P policy on a suitable CUDA-aware MPI installation:
+
+```sh
+for mode in off auto required; do
+  mpiexec -n 1 ./custatevec_bench --check-hadamard --nqubits 8 --p2p "$mode"
+  mpiexec -n 2 ./custatevec_bench --check-hadamard --nqubits 8 --p2p "$mode"
+  mpiexec -n 4 ./custatevec_bench --check-hadamard --nqubits 3 --p2p "$mode"
+done
+```
+
+`required` needs mutually usable same-node P2P peers; repeat on multiple nodes
+using the site's launcher. These are validation commands, not recorded results.
+To check reverse-job warm-ups and CSV on the target:
+
+```sh
+mpiexec -n 2 ./custatevec_bench --job hadamard-reverse --nqubits 8 --repeats 2 --warmup 1 > reverse.csv
+awk -F, 'NR == 1 { if ($0 != "job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits") exit 1; next }
+{ if (NF != 6 || $1 != "hadamard-reverse" || $2 != NR-1 || $3 != 8 || $4 != 2 || $5 !~ /^[0-9.eE+-]+$/ || $5+0 < 0 || $6 != "") exit 1; rows++ }
+END { if (rows != 2) exit 1 }' reverse.csv
+```
+
+A CUDA-independent test explicitly checks the production logical traversal for
+both orders, including N=1 and N=62:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -pedantic -Iinclude tests/hadamard_order_test.cpp -o /tmp/hadamard_order_test
+/tmp/hadamard_order_test
+```
 
 A target-environment record-count check for the default Hadamard job is:
 
@@ -430,6 +471,7 @@ two ranks, N=31, 128 measured repetitions, no warm-ups, and seed 1:
 
 ```sh
 bash scripts/launch-hadamard.sh > hadamard.csv 2> hadamard.log
+bash scripts/launch-hadamard-reverse.sh > hadamard-reverse.csv 2> hadamard-reverse.log
 bash scripts/launch-measure.sh > measure.csv 2> measure.log
 ```
 
@@ -501,7 +543,7 @@ recomputes actual masses for every selected initial state.
 
 | CSV column | Meaning |
 | --- | --- |
-| `job` | Selected `hadamard` or `measure` operation |
+| `job` | Selected `hadamard`, `hadamard-reverse`, or `measure` operation |
 | `iteration` | One-based measured repetition; excludes warm-ups |
 | `nqubits` | Total logical qubits across the distributed state |
 | `mpi_ranks` | Number of world ranks sharing that state |

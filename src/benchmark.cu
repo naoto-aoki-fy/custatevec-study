@@ -1,4 +1,5 @@
 #include "bench.hpp"
+#include "hadamard_order.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,7 @@ void apply_hadamard(Runtime& runtime, int logical) {
 
 class HadamardJob final : public Job {
 public:
+    explicit HadamardJob(bool reverse = false) : reverse_(reverse) {}
     void prepare(Runtime& runtime) override {
         runtime.reserve_gate_workspace(h_matrix, 1);
         if (runtime.topology.rank == 0)
@@ -40,9 +42,19 @@ public:
         runtime.initialize_zero();
     }
     JobResult execute(Runtime& runtime, std::uint64_t, std::uint64_t) override {
-        for (int q = 0; q < runtime.nqubits; ++q) apply_hadamard(runtime, q);
+        execute_sequence(runtime, [](int) {});
         return {};
     }
+    // The untimed check observes each logical target after its gate completes.
+    template<class AfterGate>
+    void execute_sequence(Runtime& runtime, AfterGate after_gate) {
+        for_each_hadamard_target(runtime.nqubits, reverse_, [&](int q) {
+            apply_hadamard(runtime, q);
+            after_gate(q);
+        });
+    }
+private:
+    bool reverse_;
 };
 
 // Counter-derived SplitMix64 draws: warm-ups use the harness's high-bit domain.
@@ -207,6 +219,7 @@ void compare_logical_state(Runtime& runtime, const std::vector<cuDoubleComplex>&
 
 std::unique_ptr<Job> make_job(const std::string& name, const std::string& initial_state) {
     if (name == "hadamard") return std::make_unique<HadamardJob>();
+    if (name == "hadamard-reverse") return std::make_unique<HadamardJob>(true);
     if (name == "measure") return std::make_unique<MeasurementJob>(initial_state);
     throw std::runtime_error("Job '" + name + "' is not implemented; no timings produced");
 }
@@ -219,15 +232,19 @@ void check_hadamard(Runtime& runtime) {
     const auto count = std::size_t{1} << runtime.nqubits;
     std::vector<cuDoubleComplex> reference(count);
 
-    // Repeat the uniform case to exercise reinitialization after a changed map.
-    for (int repetition = 0; repetition < 2; ++repetition) {
-        runtime.reset_mapping();
-        job.initialize(runtime, 0, repetition);
-        runtime.synchronize();
-        job.execute(runtime, 0, repetition);
-        const double uniform = std::exp2(-0.5 * runtime.nqubits);
-        std::fill(reference.begin(), reference.end(), make_cuDoubleComplex(uniform, 0.0));
-        compare_logical_state(runtime, reference, "all H on |0>, repetition " + std::to_string(repetition + 1));
+    // Repeat both orders to exercise reinitialization after a changed map.
+    for (bool reverse : {false, true}) {
+        HadamardJob ordered_job(reverse);
+        for (int repetition = 0; repetition < 2; ++repetition) {
+            runtime.reset_mapping();
+            ordered_job.initialize(runtime, 0, repetition);
+            runtime.synchronize();
+            ordered_job.execute(runtime, 0, repetition);
+            const double uniform = std::exp2(-0.5 * runtime.nqubits);
+            std::fill(reference.begin(), reference.end(), make_cuDoubleComplex(uniform, 0.0));
+            compare_logical_state(runtime, reference, std::string(reverse ? "reverse" : "ascending") +
+                " all H on |0>, repetition " + std::to_string(repetition + 1));
+        }
     }
 
     // Unequal, signed complex amplitudes whose values depend on the full logical
@@ -259,11 +276,25 @@ void check_hadamard(Runtime& runtime) {
         apply_hadamard(runtime, q);
         compare_logical_state(runtime, reference, "individual H on logical q=" + std::to_string(q));
     }
-    load_input();
-    reference = input;
-    for (int q = 0; q < runtime.nqubits; ++q) cpu_hadamard(reference, q);
-    job.execute(runtime, 0, 0);
-    compare_logical_state(runtime, reference, "all H on asymmetric complex input");
+    for (bool reverse : {false, true}) {
+        HadamardJob ordered_job(reverse);
+        const std::string label = reverse ? "reverse" : "ascending";
+        load_input();
+        reference = input;
+        int step = 0;
+        ordered_job.execute_sequence(runtime, [&](int q) {
+            const int expected = reverse ? runtime.nqubits - 1 - step : step;
+            if (q != expected) fail("Incorrect " + label + " logical Hadamard target order");
+            cpu_hadamard(reference, expected);
+            compare_logical_state(runtime, reference, label + " prefix through q=" + std::to_string(q));
+            ++step;
+        });
+        if (step != runtime.nqubits) fail("Incorrect Hadamard gate count");
+        // Also exercise the production execute entry point without observers.
+        load_input();
+        ordered_job.execute(runtime, 0, 0);
+        compare_logical_state(runtime, reference, label + " all H on asymmetric complex input");
+    }
 }
 
 void check_measure(Runtime& runtime) {

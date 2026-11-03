@@ -13,10 +13,16 @@ The separate, untimed `--smoke-check` is capped at 20 total qubits and defaults 
 
 ## Overall benchmark requirements
 
-The finished program must provide two independently executable jobs:
+The finished program must provide three independently executable jobs:
 
-- `--job hadamard`: initialize an N-qubit state to |0>^N and apply one Hadamard gate to every logical qubit.
+- `--job hadamard`: initialize an N-qubit state to |0>^N and apply one Hadamard gate to every logical qubit in ascending order q=0,...,N-1.
+- `--job hadamard-reverse`: the same initialization and separate gate calls in descending logical order q=N-1,...,0. Share preparation and gate application with `hadamard`, including physical-bit-0 localization, retained final mapping, and identity mapping at the start of each repetition. Timing, warm-ups, precision, and CSV behavior are identical; record `hadamard-reverse` in the job column with empty measurement bits.
 - `--job measure`: directly initialize the selected normalized N-qubit state (uniform by default) and perform one joint computational-basis measurement of the complete register, including state collapse.
+
+`--check-hadamard` validates both orders with repeated zero-state runs, explicit
+logical target order and gate count checks, and asymmetric complex-state prefix
+and full-sequence comparisons against an independent CPU reference. Use both
+single-rank and multi-rank launches, including one local bit, under all P2P policies.
 
 Each invocation runs exactly one job. The jobs must be usable as separate MPI launches and separate scheduler jobs.
 
@@ -125,7 +131,7 @@ usable same-node workload swap peers and falls back to the CUDA-aware MPI
 communicator for other pairs. Off skips explicit registration; MPI may still
 use IPC internally. Required aborts coherently before timing if any same-node
 pair needed by the workload lacks mutual P2P; inter-node pairs remain on MPI
-and no same-node swap peers is valid. Hadamard/check-hadamard need rank XOR
+and no same-node swap peers is valid. Both Hadamard orders/check-hadamard need rank XOR
 each global-rank bit, smoke needs rank XOR 1, and measurement needs no swaps.
 
 Exchange identities, handles, and directional setup outcomes within the actual
