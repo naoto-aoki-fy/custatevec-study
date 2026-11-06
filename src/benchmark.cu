@@ -72,12 +72,12 @@ public:
     void prepare(Runtime& runtime) override {
         ordering_.resize(runtime.topology.local_bits);
         bits_.resize(runtime.topology.local_bits);
-        std::iota(ordering_.begin(), ordering_.end(), 0);
+        std::iota(ordering_.rbegin(), ordering_.rend(), 0);
         masses_.resize(runtime.topology.ranks);
         runtime.reserve_measurement_workspace();
         if (runtime.topology.rank == 0)
             std::cerr << "measurement=joint-full-register rank_selection=measured-FP64-masses"
-                      << " initial_state=" << initial_state_
+                      << " local_bit_order=descending initial_state=" << initial_state_
                       << " rng=SplitMix64-counter-53-bits host_mass_buffer_bytes="
                       << checked_multiply(masses_.size(), sizeof(double)) << '\n';
     }
@@ -90,8 +90,13 @@ public:
     JobResult execute(Runtime& runtime, std::uint64_t seed, std::uint64_t repetition) override {
         return measure(runtime, measurement_draw(seed, repetition));
     }
-    // Also used by the untimed check to exercise the production path with
-    // controlled draws. No allocation or state-dependent caching occurs here.
+    // Untimed assertion used by --check-measure.
+    void check_ordering() const {
+        for (std::size_t i = 0; i < ordering_.size(); ++i)
+            if (ordering_[i] != static_cast<int32_t>(ordering_.size() - 1 - i))
+                fail("Measurement check: local bit ordering must be descending");
+    }
+    // Controlled draws exercise the production path without allocation or caching.
     JobResult measure(Runtime& runtime, double draw) {
         const auto& t = runtime.topology;
         double local_mass = 0.0;
@@ -143,9 +148,11 @@ public:
                 conditional_draw, CUSTATEVEC_COLLAPSE_NONE, 0.0, local_mass));
             CUDA_TRY(cudaStreamSynchronize(runtime.stream));
             physical = static_cast<std::uint64_t>(owner) << t.local_bits;
-            for (int q = 0; q < t.local_bits; ++q) {
-                if (bits_[q] != 0 && bits_[q] != 1) fail("Invalid local measurement bit");
-                physical |= static_cast<std::uint64_t>(bits_[q]) << q;
+            // bitString[i] is the value of physical qubit bitOrdering[i],
+            // not physical qubit i. Keep these pairs for mask and collapse too.
+            for (int i = 0; i < t.local_bits; ++i) {
+                if (bits_[i] != 0 && bits_[i] != 1) fail("Invalid local measurement bit");
+                physical |= static_cast<std::uint64_t>(bits_[i]) << ordering_[i];
             }
             double selected_mass = 0.0;
             SV_TRY(custatevecAbs2SumArray(runtime.handle, runtime.state, CUDA_C_64F,
@@ -302,12 +309,13 @@ void check_measure(Runtime& runtime) {
     MeasurementJob job;
     job.prepare(runtime);
     runtime.finalize_preparation();
+    job.check_ordering();
     const auto count = std::size_t{1} << runtime.nqubits;
     const auto base = static_cast<std::uint64_t>(runtime.topology.rank) * runtime.local_elements;
     std::vector<cuDoubleComplex> input(count), actual(runtime.local_elements);
     const std::vector<double> draws = {0.0, 0.125, 0.25, 0.5, 0.75, std::nextafter(1.0, 0.0)};
     const auto abs2 = [](cuDoubleComplex a) { return a.x * a.x + a.y * a.y; };
-    const auto check = [&](const std::string& label, const std::string& initial_state) {
+    const auto check = [&](const std::string& label, const std::string& initial_state, bool permute_mapping = false) {
         MeasurementJob initializer(initial_state);
         const bool direct = !initial_state.empty();
         double total = 0.0;
@@ -346,12 +354,17 @@ void check_measure(Runtime& runtime) {
                 if (target < cumulative) break;
             }
             if (expected == count) fail("Measurement CPU reference could not select an outcome");
+            if (permute_mapping)
+                std::reverse(runtime.logical_to_physical.begin(), runtime.logical_to_physical.end());
+            std::uint64_t expected_logical = 0;
+            for (int q = 0; q < runtime.nqubits; ++q)
+                expected_logical |= ((expected >> runtime.logical_to_physical[q]) & 1) << q;
             const auto result = job.measure(runtime, draw);
             runtime.synchronize();
             std::uint64_t minimum = 0, maximum = 0;
             MPI_TRY(MPI_Allreduce(&result.measurement, &minimum, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD));
             MPI_TRY(MPI_Allreduce(&result.measurement, &maximum, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD));
-            if (!result.has_measurement || minimum != expected || maximum != expected)
+            if (!result.has_measurement || minimum != expected_logical || maximum != expected_logical)
                 fail("Measurement check: outcome/reference or rank agreement mismatch: " + label);
             CUDA_TRY(cudaMemcpy(actual.data(), runtime.state, runtime.state_bytes, cudaMemcpyDeviceToHost));
             const double scale = 1.0 / std::sqrt(abs2(input[expected]));
@@ -386,6 +399,31 @@ void check_measure(Runtime& runtime) {
             make_cuDoubleComplex(0.0, -2.0);
         check("basis on rank " + std::to_string(owner), "");
     }
+    // One-hot local patterns expose reversal errors on every MPI owner,
+    // including ranks that the small fixed draw set might otherwise miss.
+    for (int owner = 0; owner < runtime.topology.ranks; ++owner) {
+        for (int q = 0; q < runtime.topology.local_bits; ++q) {
+            std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+            input[static_cast<std::uint64_t>(owner) * runtime.local_elements +
+                  (std::uint64_t{1} << q)] = make_cuDoubleComplex(-1.0, 2.0);
+            check("one-hot local q=" + std::to_string(q) + " on rank " + std::to_string(owner), "");
+        }
+    }
+    if (runtime.topology.local_bits >= 3) {
+        // NVIDIA's descending-order batch_measure sample: draw 0.5 selects
+        // physical local index 6 and returns {1,1,0}, not packed index 3.
+        const cuDoubleComplex sample[] = {{0,0}, {0,0.1}, {0.1,0.1}, {0.1,0.2},
+                                         {0.2,0.2}, {0.3,0.3}, {0.3,0.4}, {0.4,0.5}};
+        std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
+        std::copy(std::begin(sample), std::end(sample), input.begin());
+        check("NVIDIA descending-order asymmetric sample", "");
+    }
+    // Dense asymmetric complex input also checks selected mass and phase when
+    // reversing the local output bits cannot be hidden by symmetric endpoints.
+    for (std::size_t i = 0; i < count; ++i)
+        input[i] = make_cuDoubleComplex(1.0 + (i % 7), -0.25 * (1.0 + (i % 11)));
+    check("asymmetric complex amplitudes", "");
+    check("asymmetric complex amplitudes with reversed logical mapping", "", true);
     for (int sparse = 0; sparse < 2; ++sparse) {
         std::fill(input.begin(), input.end(), make_cuDoubleComplex(0.0, 0.0));
         for (int rank = 0; rank < runtime.topology.ranks; ++rank) {

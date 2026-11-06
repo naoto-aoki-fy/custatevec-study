@@ -415,7 +415,8 @@ global squared norm, so this path also handles nonunit input norms. A product
 rounded to the interval's upper endpoint is clamped to the preceding double.
 
 Rank 0 broadcasts the owner and the conditional draw within that rank's mass.
-The owner calls `custatevecBatchMeasureWithOffset` once for all local bits,
+The owner calls `custatevecBatchMeasureWithOffset` once for all local bits
+in descending physical qubit order (see [ordering and validation](docs/measurement-order.md)),
 using offset zero and its measured local squared norm for this conditional
 distribution. This is the local part of one joint full-register measurement.
 It queries the selected amplitude's actual squared magnitude using a full local
