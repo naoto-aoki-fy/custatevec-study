@@ -53,13 +53,14 @@ symbol linking against CUDA is not validated in the current environment.
 | `set_mapping`, `reinitialize_mapping`, clbit get/string/read/reset | Implemented foundation |
 | C-only `qcs_set_exception_callback` and all C translation wrappers | Implemented; callback exceptions contained |
 | All `gate_*` and numbered SWAPs | Implemented; per-function status below; GPU/MPI validation pending |
-| `reset`, `reset_measurement_state` | Later task; explicit failure placeholders |
-| All measurement variants, `expectation_pauli`, `save_statevector`, all event APIs | Later task; explicit failure placeholders |
+| All measurement variants, `reset`, `reset_measurement_state` | Implemented; per-function status below; GPU/MPI execution pending |
+| `expectation_pauli`, `save_statevector`, all event APIs | Later task; explicit failure placeholders |
 
 Default workspace is allocated at state allocation. The gate task adds per-call
 workspace queries and independent growable scratch, lazy persistent MPI swap workers,
 reference localization and measured-target projection support. Explicit IPC imports
-are not used; timing events and public measurement remain future work. See
+are not used. Grouped cuStateVec measurement, coordinated sampling and public reset
+APIs are implemented; timing events remain future work. See
 [gate implementation and validation](qcs-gates.md).
 Host ABI and existing policy tests passed. Real library build/run and distributed
 acceptance criteria remain unverified, as detailed in the linked execution report.
@@ -115,8 +116,31 @@ unchanged. Positive/negative controls and mapping handling apply to every row.
 | `swap4` (C-only) | 8 | Exact-count wrapper for 4 consecutive SWAP pairs |
 
 See [QCS gates](qcs-gates.md) for distributed preparation, constraints, executed
-commands and unrun checks. Public post-measurement integration is a release gate
-for the next task; private-mask fixtures do not substitute for measurement APIs.
+commands and unrun checks. Public post-measurement integration test sources are now implemented; their
+GPU/MPI execution remains a release gate.
+
+## Measurement/reset task: per-function status
+
+Starting implementation commit: `08254a8`. Each stem below denotes both the C and
+throwing C++ declaration. All 12 entry points are implemented; host checks pass,
+while real CUDA/MPI execution is pending. See [measurement design, tests and exact
+commands](qcs-measurement.md).
+
+| Stem | Implemented behavior |
+| --- | --- |
+| `measure` | One logical Z measurement, cached results, no clbit write |
+| `measure_to_clbit` | One logical measurement plus specified classical destination |
+| `measure_many` | Caller-order groups up to four; only requested fresh targets are sampled |
+| `measure_many_to_clbits` | Local-descending then global-descending physical execution; caller-order results and requested clbits |
+| `reset` | Measure then X only for outcome 1, with reference gate-width constraints |
+| `reset_measurement_state` | Materialize all unnormalized projections then clear records; retain mapping, clbits and RNG |
+
+The implementation retains deferred raw projections, caches outcomes, uses
+cuStateVec conditional probability bins and FP64 MPI reductions, and broadcasts
+a Philox-derived sampled outcome. Empty requests, invalid lists/pointers/counts,
+selected-initializer restoration and counter exhaustion have focused checks.
+Cross-backend bitwise samples are not claimed. Expectation/save/timing APIs remain
+explicit failure placeholders; their projected-state integration is future work.
 
 ## Public inventory and ABI
 

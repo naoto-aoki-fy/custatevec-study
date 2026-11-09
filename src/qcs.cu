@@ -2,7 +2,9 @@
 #include "device_assignment.hpp"
 #include "transfer_policy.hpp"
 #include "qcs_gate.hpp"
+#include "qcs_measurement.hpp"
 #include <curand.h>
+#include <curand_kernel.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -156,6 +158,7 @@ void initialize(qcs_simulator* sim, qcs_initial_state method) {
     } catch (...) { if (mutation_started) { s.poisoned = true; s.initialized = false; } throw; }
 }
 #include "qcs_gates.cuh"
+#include "qcs_measurement.cuh"
 }
 
 qcs_simulator* qcs_simulator_create_cxx() {
@@ -244,11 +247,12 @@ void qcs_simulator_dispose_cxx(qcs_simulator* sim) {
             for (auto event : s.events) { auto result = cudaEventDestroy(event); if (result != cudaSuccess) cu_status = result; }
             s.events.clear();
             auto sv_status = s.handle ? custatevecDestroy(s.handle) : CUSTATEVEC_STATUS_SUCCESS; s.handle = nullptr;
+            auto measurement_status=s.measurement_draw ? cudaFree(s.measurement_draw) : cudaSuccess; s.measurement_draw=nullptr;
             auto gate_status = s.gate_workspace ? cudaFree(s.gate_workspace) : cudaSuccess; s.gate_workspace=nullptr;
             auto state_status = s.state ? cudaFree(s.state) : cudaSuccess; s.state = nullptr;
             auto workspace_status = s.workspace ? cudaFree(s.workspace) : cudaSuccess; s.workspace = nullptr;
             auto stream_status = s.stream ? cudaStreamDestroy(s.stream) : cudaSuccess; s.stream = nullptr;
-            check_cuda(gate_status); check_cuda(cu_status); check_cuda(state_status); check_cuda(workspace_status); check_sv(sv_status); check_cuda(stream_status);
+            check_cuda(measurement_status); check_cuda(gate_status); check_cuda(cu_status); check_cuda(state_status); check_cuda(workspace_status); check_sv(sv_status); check_cuda(stream_status);
         });
     } catch (...) { if (!error) error = std::current_exception(); }
     check_mpi(MPI_Comm_free(&s.comm)); s.disposed = true; s.initialized = false;
@@ -347,9 +351,9 @@ int qcs_simulator_read_cxx(qcs_simulator* sim, bit_num_t index) {
 }
 void qcs_simulator_reset_clbits_cxx(qcs_simulator* sim) { auto& s = live(sim); std::fill(s.clbits.begin(), s.clbits.end(), 0); }
 
-// Later stages export their ABI now, but never claim successful execution.
-void qcs_simulator_reset_cxx(qcs_simulator *sim, bit_num_t qubit_num) { throw std::runtime_error("qcs_simulator_reset_cxx: scheduled for a later compatibility stage"); }
-void qcs_simulator_reset_measurement_state_cxx(qcs_simulator *sim) { throw std::runtime_error("qcs_simulator_reset_measurement_state_cxx: scheduled for a later compatibility stage"); }
+// Public throwing APIs share checked engines; remaining placeholders are explicit.
+void qcs_simulator_reset_cxx(qcs_simulator *sim, bit_num_t qubit_num) { if (qcs_simulator_measure_cxx(sim, qubit_num)) qcs_simulator_gate_x_cxx(sim, &qubit_num, 1, nullptr, 0, nullptr, 0); }
+void qcs_simulator_reset_measurement_state_cxx(qcs_simulator *sim) { clear_measurement(sim); }
 void qcs_simulator_gate_global_phase_cxx(qcs_simulator *sim, double theta, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::global_phase, {theta}, nullptr, 0, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 void qcs_simulator_gate_h_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::h, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 void qcs_simulator_gate_x_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::x, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
@@ -385,10 +389,10 @@ void qcs_simulator_gate_xx_minus_yy_cxx(qcs_simulator *sim, double theta, double
 void qcs_simulator_gate_rccx_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::rccx, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 void qcs_simulator_gate_rcccx_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::rcccx, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 double qcs_simulator_expectation_pauli_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, const qcs_pauli_operator *operators, bit_num_t qubit_num_count, double coefficient) { throw std::runtime_error("qcs_simulator_expectation_pauli_cxx: scheduled for a later compatibility stage"); }
-int qcs_simulator_measure_cxx(qcs_simulator *sim, bit_num_t qubit_num) { throw std::runtime_error("qcs_simulator_measure_cxx: scheduled for a later compatibility stage"); }
-int qcs_simulator_measure_to_clbit_cxx(qcs_simulator *sim, bit_num_t qubit_num, bit_num_t clbit_num) { throw std::runtime_error("qcs_simulator_measure_to_clbit_cxx: scheduled for a later compatibility stage"); }
-void qcs_simulator_measure_many_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, bit_t *results) { throw std::runtime_error("qcs_simulator_measure_many_cxx: scheduled for a later compatibility stage"); }
-void qcs_simulator_measure_many_to_clbits_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, const bit_num_t *clbit_num_list, bit_num_t clbit_num_count, bit_t *results) { throw std::runtime_error("qcs_simulator_measure_many_to_clbits_cxx: scheduled for a later compatibility stage"); }
+int qcs_simulator_measure_cxx(qcs_simulator *sim, bit_num_t qubit_num) { bit_t result=0; measure_request(sim, &qubit_num, 1, nullptr, 0, &result, false); return result; }
+int qcs_simulator_measure_to_clbit_cxx(qcs_simulator *sim, bit_num_t qubit_num, bit_num_t clbit_num) { bit_t result=0; measure_request(sim, &qubit_num, 1, &clbit_num, 1, &result, true); return result; }
+void qcs_simulator_measure_many_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, bit_t *results) { measure_request(sim, qubit_num_list, qubit_num_count, nullptr, 0, results, false); }
+void qcs_simulator_measure_many_to_clbits_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, const bit_num_t *clbit_num_list, bit_num_t clbit_num_count, bit_t *results) { measure_request(sim, qubit_num_list, qubit_num_count, clbit_num_list, clbit_num_count, results, true); }
 void qcs_simulator_save_statevector_cxx(qcs_simulator *sim, const char *outfn) { throw std::runtime_error("qcs_simulator_save_statevector_cxx: scheduled for a later compatibility stage"); }
 int qcs_simulator_event_create_cxx(qcs_simulator *sim) { throw std::runtime_error("qcs_simulator_event_create_cxx: scheduled for a later compatibility stage"); }
 void qcs_simulator_event_record_cxx(qcs_simulator *sim, int event_num) { throw std::runtime_error("qcs_simulator_event_record_cxx: scheduled for a later compatibility stage"); }
@@ -469,8 +473,8 @@ extern "C" int qcs_simulator_gate_xx_minus_yy(qcs_simulator *sim, double theta, 
 extern "C" int qcs_simulator_gate_rccx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { return boundary([&] { qcs_simulator_gate_rccx_cxx(sim, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }); }
 extern "C" int qcs_simulator_gate_rcccx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { return boundary([&] { qcs_simulator_gate_rcccx_cxx(sim, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }); }
 extern "C" int qcs_simulator_expectation_pauli(qcs_simulator *sim, const bit_num_t *qubit_num_list, const qcs_pauli_operator *operators, bit_num_t qubit_num_count, double coefficient, double *result) { return boundary([&] { require(result, "Null result pointer"); *result = static_cast<std::remove_reference_t<decltype(*result)>>(qcs_simulator_expectation_pauli_cxx(sim, qubit_num_list, operators, qubit_num_count, coefficient)); }); }
-extern "C" int qcs_simulator_measure(qcs_simulator *sim, bit_num_t qubit_num, bit_t *result) { return boundary([&] { require(result, "Null result pointer"); *result = static_cast<std::remove_reference_t<decltype(*result)>>(qcs_simulator_measure_cxx(sim, qubit_num)); }); }
-extern "C" int qcs_simulator_measure_to_clbit(qcs_simulator *sim, bit_num_t qubit_num, bit_num_t clbit_num, bit_t *result) { return boundary([&] { require(result, "Null result pointer"); *result = static_cast<std::remove_reference_t<decltype(*result)>>(qcs_simulator_measure_to_clbit_cxx(sim, qubit_num, clbit_num)); }); }
+extern "C" int qcs_simulator_measure(qcs_simulator *sim, bit_num_t qubit_num, bit_t *result) { return boundary([&] { measure_request(sim, &qubit_num, 1, nullptr, 0, result, false); }); }
+extern "C" int qcs_simulator_measure_to_clbit(qcs_simulator *sim, bit_num_t qubit_num, bit_num_t clbit_num, bit_t *result) { return boundary([&] { measure_request(sim, &qubit_num, 1, &clbit_num, 1, result, true); }); }
 extern "C" int qcs_simulator_measure_many(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, bit_t *results) { return boundary([&] { qcs_simulator_measure_many_cxx(sim, qubit_num_list, qubit_num_count, results); }); }
 extern "C" int qcs_simulator_measure_many_to_clbits(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, const bit_num_t *clbit_num_list, bit_num_t clbit_num_count, bit_t *results) { return boundary([&] { qcs_simulator_measure_many_to_clbits_cxx(sim, qubit_num_list, qubit_num_count, clbit_num_list, clbit_num_count, results); }); }
 extern "C" int qcs_simulator_read(qcs_simulator *sim, bit_num_t clbit_num, bit_t *result) { return boundary([&] { require(result, "Null result pointer"); *result = static_cast<std::remove_reference_t<decltype(*result)>>(qcs_simulator_read_cxx(sim, clbit_num)); }); }

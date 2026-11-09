@@ -18,6 +18,8 @@ struct qcs_simulator {
     std::vector<bit_t> clbits;
     std::vector<int> initial_p2l, p2l, l2p;
     std::uint64_t seed = 0, measurement_cursor = 0;
+    bool measurement_exhausted = false;
+    double* measurement_draw = nullptr;
     std::uint64_t measured_mask = 0, measured_value = 0, pending_mask = 0;
     std::uint64_t elements = 0;
     cuDoubleComplex* state = nullptr;

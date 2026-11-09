@@ -3,9 +3,8 @@
 `libqcs.so` implements the foundation of the public API pinned in
 [qcs-api-compatibility.md](qcs-api-compatibility.md). The installed header is
 `include/qcs.h`, byte-identical to reference revision
-`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. All [gate APIs](qcs-gates.md) now have cuStateVec implementations. Full circuit
-simulation is not complete: reset/measurement, expectations, save, and timing events
-still throw in C++ or return 0/report the callback in C.
+`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. All [gate APIs](qcs-gates.md) now have cuStateVec implementations. [Measurement/reset](qcs-measurement.md) APIs are also implemented. Full circuit
+simulation is not complete: expectations, save, and timing events still throw in C++ or return 0/report the callback in C.
 
 ## Build and link
 
@@ -77,15 +76,15 @@ The narrow C getter output types intentionally retain modulo-256 conversion.
 
 Private owners identify mapping, classical bits, measured/pending masks, RNG cursor,
 workspace and event resources. The [gate implementation](qcs-gates.md) adds independent
-gate scratch and lazily prepared swap resources using MPI transport. Timing events
-and measurement remain later work. The benchmark's prepared workspace limit is
+gate scratch and lazily prepared swap resources using MPI transport. Measurement owns a separate eight-byte sampling buffer and persistent exhaustion
+flag; timing events remain later work. The benchmark's prepared workspace limit is
 unchanged. Remaining placeholders never consume RNG, allocate resources or return
 successful results.
 
 ## Distributed errors
 
-Create, allocation, mapping reinitialization, initialization and disposal are
-collective. Local configuration/getter/clbit calls and placeholders do not communicate.
+Create, allocation, mapping reinitialization, initialization, measurement/reset
+and disposal are collective. Local configuration/getter/clbit calls and placeholders do not communicate.
 Allocation validates matching dimensions, initializer and mapping before device work.
 Each local setup/allocation/file/device stage catches exceptions, agrees on the first
 failing rank, broadcasts its bounded diagnostic, and throws on all ranks before any

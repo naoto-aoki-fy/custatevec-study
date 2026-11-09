@@ -2,7 +2,7 @@
 
 The library implements all 34 throwing gate functions, their 34 C counterparts,
 and C-only SWAP1..4. The public header remains byte-identical to reference commit
-`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. Measurement/reset, expectations,
+`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. [Measurement/reset](qcs-measurement.md) now have public implementations. Expectations,
 statevector saving and timing events remain explicit failures for later tasks.
 
 ## Semantics and implementation
@@ -100,7 +100,7 @@ global phase can operate with no local qubits. All allocations and the installed
 cuStateVec release impose additional capacity/API constraints; N=63 is not a
 hardware-capacity promise. No installed-version CUDA build is available here.
 
-## Integration requirement for the next measurement task
+## Measurement integration
 
 Measured masks, values and pending projections are logical metadata shared with
 the foundation. The gate path already handles reference-style metadata:
@@ -113,12 +113,12 @@ the foundation. The gate path already handles reference-style metadata:
   measured/pending non-targets, clbits and RNG cursor.
 
 Private-mask integration fixtures cover target projection and a contradictory
-cached control. These do not establish public post-measurement behavior: the next
-task must populate these exact invariants through actual measurement APIs, then
-exercise local/global cached controls, target/non-target projections, repeated
+cached control. The measurement task adds actual public APIs and integration test sources for
+these invariants. GPU execution remains pending. The acceptance requirements include local/global cached controls, target/non-target projections, repeated
 measure-gate-measure, id/global phase, multiple SWAP pairs, raw expectations and
 save. Compare against the pinned deferred-projection behavior and verify no implicit
-normalization or extra draw. Public measurement/reset APIs still fail explicitly.
+normalization or extra draw. See [measurement validation](qcs-measurement.md) for implemented checks and
+remaining GPU/MPI execution requirements.
 
 ## Validation
 
