@@ -460,15 +460,27 @@ void check_measure(Runtime& runtime) {
 void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
     job.prepare(runtime);
     runtime.finalize_preparation();
+    // Separate, timing-enabled events on this rank's already assigned GPU.
+    cudaEvent_t start_event = nullptr, stop_event = nullptr;
+    CUDA_TRY(cudaEventCreate(&start_event));
+    CUDA_TRY(cudaEventCreate(&stop_event));
     const auto one = [&](std::uint64_t repetition, bool measured, int iteration) {
         runtime.reset_mapping();
         job.initialize(runtime, options.seed, repetition);
         runtime.synchronize();
         MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
-        const double start = MPI_Wtime();
+        CUDA_TRY(cudaEventRecord(start_event, runtime.stream));
         const auto result = job.execute(runtime, options.seed, repetition);
         runtime.synchronize();
-        const double elapsed = MPI_Wtime() - start;
+        // Keep the device-wide completion wait: it covers transfer/internal
+        // streams as well as compute. Swaps explicitly wait for compute before
+        // transfers and for transfers before subsequent compute submissions.
+        // Thus both markers bracket all work without default-stream ordering.
+        CUDA_TRY(cudaEventRecord(stop_event, runtime.stream));
+        CUDA_TRY(cudaEventSynchronize(stop_event));
+        float elapsed_ms = 0.0f;
+        CUDA_TRY(cudaEventElapsedTime(&elapsed_ms, start_event, stop_event));
+        const double elapsed = static_cast<double>(elapsed_ms) / 1000.0;
         if (measured) {
             double maximum = 0.0;
             MPI_TRY(MPI_Reduce(&elapsed, &maximum, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD));
@@ -493,6 +505,8 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
         std::cout << "job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits\n";
     for (int i = 0; i < options.repeats; ++i)
         one(static_cast<std::uint64_t>(i), true, i + 1);
+    CUDA_TRY(cudaEventDestroy(stop_event));
+    CUDA_TRY(cudaEventDestroy(start_event));
     // Detect buffered output errors while MPI is still active, so peers abort
     // coherently rather than reporting success with a truncated CSV file.
     if (runtime.topology.rank == 0) {

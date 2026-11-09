@@ -152,11 +152,22 @@ For each measured repetition:
 1. Initialize the required input state and reset logical-to-physical qubit mapping.
 2. Finish initialization on the GPU.
 3. Execute an MPI barrier before starting the timer.
-4. Record a rank-local start time using `MPI_Wtime()`.
+4. Record a timing-enabled start CUDA event on `Runtime::stream`.
 5. Execute the complete benchmark operation, including required communication.
 6. Complete all GPU work on every stream used by that rank and all required outstanding MPI operations.
-7. Record the rank-local elapsed time.
+7. Record a stop CUDA event on `Runtime::stream`, wait with `cudaEventSynchronize`,
+   and obtain rank-local milliseconds with `cudaEventElapsedTime`; convert to seconds.
 8. Reduce elapsed times with `MPI_MAX` after the timed interval.
+
+Create one reusable pair of timing-enabled CUDA events per rank on its assigned
+GPU outside the repetition loops, and destroy them during benchmark cleanup.
+Keep the timing-disabled swap/P2P events dedicated to communication.
+The timing backend is CUDA events: elapsed time between GPU event markers may
+include host submission gaps and MPI-related waits, not just active kernels.
+Record both markers on the explicit compute stream. The pre-start device wait
+excludes initialization; compute-before-transfer and transfer-before-compute swap
+waits plus the device-wide wait before recording stop cover all workload streams
+without relying on default-stream behavior.
 
 Report the maximum rank-local elapsed time in seconds. Do not subtract timestamps from different ranks.
 
@@ -214,7 +225,7 @@ MPI barrier is required per swap by that documented sequence.
 Both swap waits stay inside the timed Hadamard execute call. Synchronize
 the device before timing and before stopping; complete workload-owned MPI requests
 inside execute. Keep initialization and allocation outside timing and reduce
-rank-local MPI_Wtime durations with MPI_MAX. All ranks must invoke the same
+rank-local CUDA event durations (converted to seconds) with MPI_MAX. All ranks must invoke the same
 collectives and swap schedule. During close, finish all GPU work and barrier
 before destroying swap resources. Destroy the worker before its transfer
 stream, retain its state/workspaces/event/communicator until then, and destroy

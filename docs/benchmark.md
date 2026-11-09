@@ -244,8 +244,14 @@ Workloads implement `Job` in `include/bench.hpp` and are connected through
 `make_job` in `src/benchmark.cu`. `prepare` allocates reusable workspaces/descriptors;
 `initialize` independently initializes each repetition; `execute` performs the
 whole operation and completes its MPI requests. The harness resets mapping,
-completes initialization, barriers, times with local MPI_Wtime, synchronizes the
-whole GPU, stops the timer, then reduces durations with MPI_MAX. Measurement
+completes initialization, barriers, records a start CUDA event on the compute
+stream, executes the operation, synchronizes the whole GPU, then records a stop
+CUDA event on the compute stream. It waits for stop with `cudaEventSynchronize`,
+reads milliseconds with `cudaEventElapsedTime`, converts to seconds, and reduces
+rank-local durations with MPI_MAX. The timing-enabled pair is created once per
+rank outside the loops and destroyed after the loops, separate from the
+timing-disabled swap/P2P events. Elapsed GPU event-marker time may include host
+submission gaps and MPI-related waits; it is not a sum of active kernel times. Measurement
 probability work belongs inside execute. CSV formatting happens after timing.
 Warm-ups have no output rows and do not change measured seed indices.
 
@@ -308,7 +314,7 @@ according to that API contract; CUDA stream synchronization does not itself
 wait on arbitrary MPI requests. No additional per-swap MPI barrier is used.
 
 These waits, swaps, communication, gates, and the harness's final device
-synchronization remain inside the timed interval; MPI_Wtime durations still
+synchronization remain inside the CUDA event-marker interval; durations still
 use MPI_MAX across ranks. Initialization and workspace allocation remain outside
 timing. Streams live across repetitions. Cleanup synchronizes the device and
 barriers before destruction, destroys the worker before its transfer stream
@@ -555,7 +561,7 @@ recomputes actual masses for every selected initial state.
 | `iteration` | One-based measured repetition; excludes warm-ups |
 | `nqubits` | Total logical qubits across the distributed state |
 | `mpi_ranks` | Number of world ranks sharing that state |
-| `elapsed_seconds` | Maximum of rank-local `MPI_Wtime` intervals, in seconds |
+| `elapsed_seconds` | Maximum of rank-local CUDA event-marker intervals, converted from milliseconds to seconds |
 | `measurement_bits` | Exactly N logical bits q[N-1]..q[0] for measurement; empty for Hadamard |
 
 With `--job` selected and other options omitted, rank 0 writes one header and
@@ -839,3 +845,46 @@ validation at the user's request. The extended `--check-measure` cases above
 have not been run. Compilation and single-rank/multi-rank CUDA/MPI execution
 remain deferred to the target environment; no toolchain availability was
 rechecked for this change.
+
+## CUDA event timing validation
+
+The timing change passed host-only device assignment, transfer policy, Hadamard
+order and launch-script checks. This workspace has no nvcc, MPI launcher,
+CUDA/cuStateVec headers, GPU tooling, or site config.mk, so CUDA compilation,
+GPU correctness, and real CSV timing validation could not be run.
+On a configured target with at least two distinct GPUs:
+
+```sh
+make CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
+for ranks in 1 2; do
+  for check in smoke-check check-hadamard check-measure; do
+    mpiexec -n "$ranks" ./custatevec_bench --"$check" --nqubits 8
+  done
+  for job in hadamard hadamard-reverse measure; do
+    mpiexec -n "$ranks" ./custatevec_bench --job "$job" --nqubits 8 \
+      --repeats 3 --warmup 1 --seed 1 > "/tmp/events-$job-$ranks.csv"
+  done
+done
+python3 - <<'PYCSV'
+import csv
+import math
+for ranks in (1, 2):
+    for job in ('hadamard', 'hadamard-reverse', 'measure'):
+        with open(f'/tmp/events-{job}-{ranks}.csv', newline='') as stream:
+            reader = csv.DictReader(stream)
+            assert reader.fieldnames == [
+                'job', 'iteration', 'nqubits', 'mpi_ranks',
+                'elapsed_seconds', 'measurement_bits']
+            rows = list(reader)
+        assert len(rows) == 3
+        for iteration, row in enumerate(rows, 1):
+            assert None not in row and all(v is not None for v in row.values())
+            assert row['job'] == job and int(row['iteration']) == iteration
+            assert int(row['nqubits']) == 8 and int(row['mpi_ranks']) == ranks
+            elapsed = float(row['elapsed_seconds'])
+            assert math.isfinite(elapsed) and elapsed >= 0
+            bits = row['measurement_bits']
+            assert (len(bits) == 8 and set(bits) <= {'0', '1'}) if job == 'measure' else bits == ''
+print('CUDA event benchmark CSV checks passed')
+PYCSV
+```

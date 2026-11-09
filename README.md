@@ -14,6 +14,9 @@ make library CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
 mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 8 --repeats 1
 ```
 
+Timings use CUDA events for complete repetitions, reported in seconds with MPI_MAX
+across ranks; host submission gaps and MPI waits between markers may contribute.
+
 - [Benchmark setup, CLI, launch scripts and checks](docs/benchmark.md)
 - [Benchmark contract](SPEC.md)
 - [QCS build/link and API usage](docs/qcs-library.md)
