@@ -83,3 +83,12 @@ help:
 -include $(OBJECTS:.o=.d)
 
 -include build/qcs.d
+
+.PHONY: test-qcs-observation
+build/qcs_observation_test: tests/qcs_observation_test.cu src/qcs_internal.hpp libqcs.so
+	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) $< -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) $(EXTRA_LDFLAGS) -o $@
+
+test-qcs-observation: build/qcs_observation_test
+	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_observation_test
+
+build/qcs.o: src/qcs_observation.hpp

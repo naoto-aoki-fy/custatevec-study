@@ -3,7 +3,7 @@
 ## Scope and pinned evidence
 
 This document records the compatibility plan and the foundation implementation status.
-The complete compatibility layer is not implemented yet.
+All public declarations now have implementations; real CUDA/MPI validation remains incomplete.
 The goal is source and link compatibility with the complete public C and C++ interface,
 and matching defined observable behavior, using cuStateVec for computation.
 
@@ -54,13 +54,13 @@ symbol linking against CUDA is not validated in the current environment.
 | C-only `qcs_set_exception_callback` and all C translation wrappers | Implemented; callback exceptions contained |
 | All `gate_*` and numbered SWAPs | Implemented; per-function status below; GPU/MPI validation pending |
 | All measurement variants, `reset`, `reset_measurement_state` | Implemented; per-function status below; GPU/MPI execution pending |
-| `expectation_pauli`, `save_statevector`, all event APIs | Later task; explicit failure placeholders |
+| `expectation_pauli`, `save_statevector`, all event APIs | Implemented; host contraction/ABI checks pass; CUDA/MPI validation pending |
 
 Default workspace is allocated at state allocation. The gate task adds per-call
 workspace queries and independent growable scratch, lazy persistent MPI swap workers,
 reference localization and measured-target projection support. Explicit IPC imports
 are not used. Grouped cuStateVec measurement, coordinated sampling and public reset
-APIs are implemented; timing events remain future work. See
+APIs and timing events are implemented. See
 [gate implementation and validation](qcs-gates.md).
 Host ABI and existing policy tests passed. Real library build/run and distributed
 acceptance criteria remain unverified, as detailed in the linked execution report.
@@ -139,8 +139,63 @@ The implementation retains deferred raw projections, caches outcomes, uses
 cuStateVec conditional probability bins and FP64 MPI reductions, and broadcasts
 a Philox-derived sampled outcome. Empty requests, invalid lists/pointers/counts,
 selected-initializer restoration and counter exhaustion have focused checks.
-Cross-backend bitwise samples are not claimed. Expectation/save/timing APIs remain
-explicit failure placeholders; their projected-state integration is future work.
+Cross-backend bitwise samples are not claimed. Expectation/save/timing APIs now
+observe projected states; see the remaining-API report below.
+
+## Remaining API completion: implementation versus validation
+
+The exhaustive 139-declaration header inventory has no remaining failure placeholders.
+This includes both C++ allocation overloads, the inline C++ convenience overload,
+C-only numbered SWAPs and callback registration, and both language forms of the
+five previously deferred functions. The pinned header is unchanged.
+
+| Function (C and C++) | Implementation | Validation |
+| --- | --- | --- |
+| `expectation_pauli` | Finite coefficient, distinct logical indices and valid enum checks; identity allows null lists; nonidentity support localized with retained mapping; raw complex128 contraction and MPI SUM | 128 complex/unnormalized host tensor-product comparisons plus identity checks passed; public GPU/MPI tests written, unrun |
+| `save_statevector` | All pending projections materialized; raw native complex128 pairs in logical basis order; serialized rank writes and coordinated file errors | Mapping-sensitive and measured-state GPU tests written, unrun |
+| selected LOAD initializer | Native complex128 contiguous physical slices from `statevector_input.bin`, independent of mapping | Independent physical-order fixture written, unrun |
+| `event_create` | Owned CUDA timing events with blocking synchronization flag; C++ int IDs, C bit_t narrowing | ABI probes passed; GPU tests written, unrun |
+| `event_record` | Record on simulator compute stream; prior distributed exchanges already join this stream | Syntax checked; GPU/MPI validation pending |
+| `event_get_elapsed_time` | Wait for both events; float milliseconds, MPI_FLOAT MAX, return double seconds | Unit/conversion/aggregation and invalid-ID tests written, unrun |
+
+Expectation currently stages each rank's local state on the host for the Pauli
+contraction after existing cuStateVec localization. This preserves raw amplitudes
+and phases but has host-memory and transfer costs proportional to the local vector.
+Observation preserves measured outcomes, classical bits and RNG; only pending
+projection work is consumed. C output pointers are assigned only after successful
+completion; null expectation output is rejected before any state mutation.
+
+Save and load ordering were inspected separately at the pinned source: save uses
+`perm_p2l` to seek logical indices, while load reads rank-contiguous physical
+slices without applying the mapping. Consequently a saved file loaded under a
+nonidentity mapping is not generally the same logical state. Files have no header
+or normalization and contain consecutive native real/imaginary doubles. The new
+fixture writes independent physical input values and checks saved logical output,
+rather than asserting an invalid universal round trip.
+
+Executed checks: all six host C++ test executables passed (gate oracle requires
+`-Wno-unknown-pragmas` for its CUDA pragma), pinned-header C/C++ probes passed,
+and `git diff --check` passed. Temporary nonfunctional CUDA/MPI declaration shims
+also passed implementation and new integration-test syntax checks; they do not
+validate actual CUDA signatures or execution. `make library` fails because
+`config.mk` is absent; neither `nvcc` nor `mpicxx` is in PATH.
+
+**Remaining gap:** real CUDA compilation/linking, GPU numerical execution, MPI
+localization/file ordering/timing, sanitizers and benchmark regression execution.
+No public implementation is knowingly left deferred. Run the new target in an
+isolated writable working directory (it uses/removes `statevector_input.bin`):
+
+```sh
+make library build/qcs_observation_test CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
+python3 tests/check_qcs_header.py --library ./libqcs.so
+export LD_LIBRARY_PATH="$PWD:${LD_LIBRARY_PATH:-}"
+timeout 600s mpiexec -n 1 ./build/qcs_observation_test
+timeout 600s mpiexec -n 2 ./build/qcs_observation_test
+timeout 600s mpiexec -n 4 ./build/qcs_observation_test
+```
+
+The benchmark sources and their timing boundaries are unchanged. Run the existing
+foundation, gate, measurement and benchmark acceptance checks on the same cluster.
 
 ## Public inventory and ABI
 

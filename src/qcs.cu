@@ -3,9 +3,11 @@
 #include "transfer_policy.hpp"
 #include "qcs_gate.hpp"
 #include "qcs_measurement.hpp"
+#include "qcs_observation.hpp"
 #include <curand.h>
 #include <curand_kernel.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -388,15 +390,114 @@ void qcs_simulator_gate_xx_plus_yy_cxx(qcs_simulator *sim, double theta, double 
 void qcs_simulator_gate_xx_minus_yy_cxx(qcs_simulator *sim, double theta, double beta, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::xx_minus_yy, {theta, beta}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 void qcs_simulator_gate_rccx_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::rccx, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
 void qcs_simulator_gate_rcccx_cxx(qcs_simulator *sim, const bit_num_t *target_qubit_num_list, bit_num_t target_qubit_num_count, const bit_num_t *negctrl_qubit_num_list, bit_num_t negctrl_qubit_num_count, const bit_num_t *ctrl_qubit_num_list, bit_num_t ctrl_qubit_num_count) { operate_gate(sim, qcs_gate::Kind::rcccx, {}, target_qubit_num_list, target_qubit_num_count, negctrl_qubit_num_list, negctrl_qubit_num_count, ctrl_qubit_num_list, ctrl_qubit_num_count); }
-double qcs_simulator_expectation_pauli_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, const qcs_pauli_operator *operators, bit_num_t qubit_num_count, double coefficient) { throw std::runtime_error("qcs_simulator_expectation_pauli_cxx: scheduled for a later compatibility stage"); }
+double qcs_simulator_expectation_pauli_cxx(qcs_simulator* sim, const bit_num_t* qubits,
+        const qcs_pauli_operator* operators, bit_num_t count, double coefficient) {
+    auto& s=live(sim);
+    same(s.comm,count);
+    std::vector<int> targets;
+    std::vector<cuDoubleComplex> host;
+    qcs_gate::Localization plan;
+    int local=s.num_qubits-s.global_bits;
+    phase(s.comm,[&] {
+        require(s.state && s.initialized && !s.poisoned,"Expectation requires initialized storage");
+        require(count>=0 && count<=s.num_qubits,"Invalid Pauli count");
+        require(!count || (qubits && operators),"Null Pauli list");
+        require(std::isfinite(coefficient),"Nonfinite Pauli coefficient");
+        std::vector<bool> used(s.num_qubits,false);
+        for(int j=0;j<count;++j) {
+            int q=qubits[j];
+            require(q>=0 && q<s.num_qubits && !used[q],"Invalid or duplicate Pauli qubit");
+            used[q]=true;
+            require(operators[j]>=QCS_PAULI_I && operators[j]<=QCS_PAULI_Z,"Invalid Pauli operator");
+            if(operators[j]!=QCS_PAULI_I) targets.push_back(q);
+        }
+        require(int(targets.size())<=local,"Pauli support exceeds local qubits");
+        plan=qcs_gate::localize(s.p2l,targets,local);
+        host.resize(s.elements);
+    });
+    for(int j=0;j<count;++j) {same(s.comm,qubits[j]);same(s.comm,int(operators[j]));}
+    double root=coefficient;
+    check_mpi(MPI_Bcast(&root,1,MPI_DOUBLE,0,s.comm));
+    phase(s.comm,[&] {require(root==coefficient,"Pauli coefficients differ across ranks");});
+    measurement_metadata(s);
+    if(!plan.swaps.empty()) prepare_swap(s);
+    double sum=0,global=0;
+    try {
+        phase(s.comm,[&] {DeviceScope device(s.device);project_targets(s,s.pending_mask);
+            check_cuda(cudaStreamSynchronize(s.stream));});
+        for(auto pair:plan.swaps) exchange_bit(s,pair.first,pair.second);
+        s.p2l.swap(plan.p2l);s.l2p.swap(plan.l2p);
+        phase(s.comm,[&] {
+            DeviceScope device(s.device);
+            check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
+            check_cuda(cudaStreamSynchronize(s.stream));
+            sum=qcs_observation::contract(host,s.l2p,qubits,operators,count);
+        });
+    } catch(...) {s.poisoned=true;throw;}
+    check_mpi(MPI_Allreduce(&sum,&global,1,MPI_DOUBLE,MPI_SUM,s.comm));
+    return coefficient*global;
+}
 int qcs_simulator_measure_cxx(qcs_simulator *sim, bit_num_t qubit_num) { bit_t result=0; measure_request(sim, &qubit_num, 1, nullptr, 0, &result, false); return result; }
 int qcs_simulator_measure_to_clbit_cxx(qcs_simulator *sim, bit_num_t qubit_num, bit_num_t clbit_num) { bit_t result=0; measure_request(sim, &qubit_num, 1, &clbit_num, 1, &result, true); return result; }
 void qcs_simulator_measure_many_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, bit_t *results) { measure_request(sim, qubit_num_list, qubit_num_count, nullptr, 0, results, false); }
 void qcs_simulator_measure_many_to_clbits_cxx(qcs_simulator *sim, const bit_num_t *qubit_num_list, bit_num_t qubit_num_count, const bit_num_t *clbit_num_list, bit_num_t clbit_num_count, bit_t *results) { measure_request(sim, qubit_num_list, qubit_num_count, clbit_num_list, clbit_num_count, results, true); }
-void qcs_simulator_save_statevector_cxx(qcs_simulator *sim, const char *outfn) { throw std::runtime_error("qcs_simulator_save_statevector_cxx: scheduled for a later compatibility stage"); }
-int qcs_simulator_event_create_cxx(qcs_simulator *sim) { throw std::runtime_error("qcs_simulator_event_create_cxx: scheduled for a later compatibility stage"); }
-void qcs_simulator_event_record_cxx(qcs_simulator *sim, int event_num) { throw std::runtime_error("qcs_simulator_event_record_cxx: scheduled for a later compatibility stage"); }
-double qcs_simulator_event_get_elapsed_time_cxx(qcs_simulator *sim, event_num_t start_event_num, event_num_t stop_event_num) { throw std::runtime_error("qcs_simulator_event_get_elapsed_time_cxx: scheduled for a later compatibility stage"); }
+void qcs_simulator_save_statevector_cxx(qcs_simulator* sim,const char* outfn) {
+    auto& s=live(sim);
+    std::vector<cuDoubleComplex> host;
+    phase(s.comm,[&] {
+        require(s.state && s.initialized && !s.poisoned,"Save requires initialized storage");
+        require(outfn && *outfn,"Invalid output filename");host.resize(s.elements);
+    });
+    measurement_metadata(s);
+    phase(s.comm,[&] {
+        DeviceScope device(s.device);
+        project_targets(s,s.pending_mask);
+        check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
+        check_cuda(cudaStreamSynchronize(s.stream));
+    });
+    check_mpi(MPI_Barrier(s.comm));
+    for(int rank=0;rank<s.ranks;++rank) phase(s.comm,[&] {
+        if(rank!=s.rank) return;
+        std::unique_ptr<FILE,decltype(&std::fclose)> file(std::fopen(outfn,rank?"rb+":"wb"),&std::fclose);
+        require(bool(file),"Cannot open statevector output");
+        for(std::uint64_t i=0;i<s.elements;++i) {
+            auto physical=i+s.elements*std::uint64_t(s.rank);
+            std::uint64_t logical=0;
+            for(int p=0;p<s.num_qubits;++p) logical|=((physical>>p)&1)<<s.p2l[p];
+            require(logical<=std::uint64_t(std::numeric_limits<off_t>::max())/sizeof(cuDoubleComplex),"Output offset overflow");
+            require(fseeko(file.get(),off_t(logical*sizeof(cuDoubleComplex)),SEEK_SET)==0,"Output seek failed");
+            require(std::fwrite(&host[i],sizeof(cuDoubleComplex),1,file.get())==1,"Output write failed");
+        }
+        require(std::fflush(file.get())==0,"Output flush failed");
+        require(std::fclose(file.release())==0,"Output close failed");
+    });
+}
+int qcs_simulator_event_create_cxx(qcs_simulator* sim) {
+    auto& s=live(sim);cudaEvent_t event=nullptr;
+    DeviceScope device(s.device);
+    s.events.reserve(s.events.size()+1);
+    check_cuda(cudaEventCreateWithFlags(&event,cudaEventBlockingSync));
+    int id=int(s.events.size());s.events.push_back(event);return id;
+}
+void qcs_simulator_event_record_cxx(qcs_simulator* sim,int id) {
+    auto& s=live(sim);
+    require(id>=0 && std::size_t(id)<s.events.size(),"Invalid event ID");
+    DeviceScope device(s.device);
+    check_cuda(cudaEventRecord(s.events[id],s.stream));
+}
+double qcs_simulator_event_get_elapsed_time_cxx(qcs_simulator* sim,event_num_t start,event_num_t stop) {
+    auto& s=live(sim);float ms=0,global=0;
+    same(s.comm,start);same(s.comm,stop);
+    phase(s.comm,[&] {
+        require(start>=0 && stop>=0 && std::size_t(start)<s.events.size() && std::size_t(stop)<s.events.size(),"Invalid event ID");
+        DeviceScope device(s.device);
+        check_cuda(cudaEventSynchronize(s.events[start]));
+        check_cuda(cudaEventSynchronize(s.events[stop]));
+        check_cuda(cudaEventElapsedTime(&ms,s.events[start],s.events[stop]));
+    });
+    check_mpi(MPI_Allreduce(&ms,&global,1,MPI_FLOAT,MPI_MAX,s.comm));
+    return global*1e-3;
+}
 
 namespace {
 void report(const char* message) noexcept {
