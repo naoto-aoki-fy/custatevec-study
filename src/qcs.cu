@@ -429,8 +429,10 @@ double qcs_simulator_expectation_pauli_cxx(qcs_simulator* sim, const bit_num_t* 
         s.p2l.swap(plan.p2l);s.l2p.swap(plan.l2p);
         phase(s.comm,[&] {
             DeviceScope device(s.device);
-            check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
-            check_cuda(cudaStreamSynchronize(s.stream));
+            try {
+                check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
+                check_cuda(cudaStreamSynchronize(s.stream));
+            } catch(...) {fatal_cuda(cudaStreamSynchronize(s.stream));throw;}
             sum=qcs_observation::contract(host,s.l2p,qubits,operators,count);
         });
     } catch(...) {s.poisoned=true;throw;}
@@ -449,12 +451,16 @@ void qcs_simulator_save_statevector_cxx(qcs_simulator* sim,const char* outfn) {
         require(outfn && *outfn,"Invalid output filename");host.resize(s.elements);
     });
     measurement_metadata(s);
-    phase(s.comm,[&] {
-        DeviceScope device(s.device);
-        project_targets(s,s.pending_mask);
-        check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
-        check_cuda(cudaStreamSynchronize(s.stream));
-    });
+    try {
+        phase(s.comm,[&] {
+            DeviceScope device(s.device);
+            try {
+                project_targets(s,s.pending_mask);
+                check_cuda(cudaMemcpyAsync(host.data(),s.state,s.elements*sizeof(cuDoubleComplex),cudaMemcpyDeviceToHost,s.stream));
+                check_cuda(cudaStreamSynchronize(s.stream));
+            } catch(...) {fatal_cuda(cudaStreamSynchronize(s.stream));throw;}
+        });
+    } catch(...) {s.poisoned=true;throw;}
     check_mpi(MPI_Barrier(s.comm));
     for(int rank=0;rank<s.ranks;++rank) phase(s.comm,[&] {
         if(rank!=s.rank) return;

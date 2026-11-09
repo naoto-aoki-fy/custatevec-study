@@ -75,6 +75,21 @@ int main() {
         need(!qcs_simulator_event_record(s,-1));
         need(!qcs_simulator_event_get_elapsed_time(s,-1,stop,&result) && result==123);
         need(!qcs_simulator_event_create(s,nullptr));
+        // Scalar distributed slices permit arbitrary identity support, but no X/Y/Z.
+        if(s->global_bits>0) {
+            auto* scalar=qcs_simulator_create_cxx();
+            qcs_simulator_set_num_qubits_cxx(scalar,scalar->global_bits);
+            qcs_simulator_allocate_memory_cxx(scalar);
+            qcs_simulator_set_zero_state_cxx(scalar);
+            qcs_pauli_operator identity=QCS_PAULI_I;
+            near(qcs_simulator_expectation_pauli_cxx(scalar,&q,&identity,1,3),3);
+            qcs_pauli_operator x=QCS_PAULI_X;
+            need(!qcs_simulator_expectation_pauli(scalar,&q,&x,1,1,&result) && result==123);
+            qcs_simulator_destroy_cxx(scalar);
+        }
+        bit_num_t duplicate[]={0,0};qcs_pauli_operator zz[]={QCS_PAULI_Z,QCS_PAULI_Z};
+        need(!qcs_simulator_expectation_pauli(s,duplicate,zz,2,1,&result) && result==123);
+        need(!qcs_simulator_expectation_pauli(s,&q,nullptr,1,1,&result) && result==123);
         MPI_Barrier(s->comm);
         if(s->rank==0) {std::remove("statevector_input.bin");std::remove("qcs_observation_output.bin");}
         qcs_simulator_destroy_cxx(s);MPI_Finalize();return 0;
