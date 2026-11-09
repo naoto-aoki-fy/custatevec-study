@@ -2,7 +2,8 @@
 
 ## Scope and pinned evidence
 
-This is an investigation and implementation plan, not an implemented compatibility layer.
+This document records the compatibility plan and the foundation implementation status.
+The complete compatibility layer is not implemented yet.
 The goal is source and link compatibility with the complete public C and C++ interface,
 and matching defined observable behavior, using cuStateVec for computation.
 
@@ -10,7 +11,8 @@ and matching defined observable behavior, using cuStateVec for computation.
   `7ca8e923e63d39bc92d207cebfb5fbd985fc999c` (clean working tree at inspection).
 - Reference: `jhpc-quantum/rqs-svg`, exclusively commit
   `10a4da5b29a65f3eec0f556344ce06c3ff24072a`.
-- No reference files or implementation code are changed by this task.
+- The original investigation changed no implementation code. The foundation task starts
+  from `67208f8` and adds the public header, library foundation and checks; reference files remain unchanged.
 - Existing benchmark CLI, numerical behavior, timing boundaries, CSV, and external
   `config.mk` contract are invariants, not migration targets.
 
@@ -35,6 +37,29 @@ The public measurement integration tests (`tests/measurement_integration_test.cp
 also supply coherence, shuffled destinations, group remainder and cached-result fixtures.
 Source/test inspection is evidence of intended behavior, not proof of GPU execution.
 Reference documentation itself records substantial unverified CUDA/distributed coverage.
+
+## Foundation implementation status
+
+See [QCS library foundation](qcs-library.md) for build/link instructions, ownership,
+distributed failure rules and exact executed/deferred checks. `include/qcs.h` is
+byte-identical to the pinned reference. All declarations have definitions, but
+symbol linking against CUDA is not validated in the current environment.
+
+| Inventory entries (both C/C++ unless noted) | Current status |
+| --- | --- |
+| `create`, `dispose`, `destroy`, process/qubit/clbit queries and configuration | Implemented foundation; GPU/MPI execution pending |
+| Both `allocate_memory_cxx` overloads, C allocation variants and inline C++ overload | Implemented uninitialized allocation and selected-state dispatch |
+| `set_zero_state`, `set_flat_state`, `set_sequential_state`, `set_entangled_state`, `set_random_state`, selected LOAD | Implemented raw initializer behavior; CURAND/file restoration; device execution pending |
+| `set_mapping`, `reinitialize_mapping`, clbit get/string/read/reset | Implemented foundation |
+| C-only `qcs_set_exception_callback` and all C translation wrappers | Implemented; callback exceptions contained |
+| All `gate_*`, numbered SWAPs, `reset`, `reset_measurement_state` | Later task; explicit failure placeholders |
+| All measurement variants, `expectation_pauli`, `save_statevector`, all event APIs | Later task; explicit failure placeholders |
+
+Mandatory default workspace is allocated now. Swap workers, full-catalog workspace
+preparation, IPC peers, projections and timing events remain future work; no first
+operation can silently bypass those requirements because those operations fail.
+Host ABI and existing policy tests passed. Real library build/run and distributed
+acceptance criteria remain unverified, as detailed in the linked execution report.
 
 ## Public inventory and ABI
 
@@ -68,7 +93,7 @@ Use the pinned header unchanged for compile/link acceptance. C symbols have C li
 ### Complete mapping to implementation work
 
 For this table, a stem `foo` denotes both `qcs_simulator_foo` and
-`qcs_simulator_foo_cxx`, unless explicitly marked C-only. All C wrappers are new;
+`qcs_simulator_foo_cxx`, unless explicitly marked C-only. All C wrappers are implemented in the foundation;
 shared core logic should avoid duplicating semantics. “Reuse” means extract/adapt,
 not call the current world-aborting runtime directly from the C boundary.
 
@@ -499,8 +524,7 @@ Completion means every inventoried declaration links and passes its applicable
 behavior tests, supported configuration limits are explicit, no unexplained
 reference conflict remains, and benchmark/build invariants pass. Until L=0/N=63
 and any installed-version restrictions are resolved, advertise only a documented
-subset rather than complete compatibility. No implementation stage is authorized
-by this investigation task.
+subset rather than complete compatibility. The foundation stage is implemented; remaining stages require subsequent work.
 
 ## Investigation validation
 

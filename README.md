@@ -4,6 +4,8 @@ The implementation provides a C++17/CUDA/MPI runtime, a reusable benchmark timin
 harness, independent Hadamard and full-register measurement benchmarks, and
 opt-in untimed small-state checks.
 The common contract is recorded in [SPEC.md](SPEC.md).
+The separate [QCS library foundation](docs/qcs-library.md) builds with `make library`
+and exposes the pinned C/C++ header; circuit operations remain scheduled for later stages.
 
 ## Build prerequisites
 

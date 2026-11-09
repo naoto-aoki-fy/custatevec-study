@@ -23,7 +23,7 @@ CUSTATEVEC_LDFLAGS ?= -L$(CUSTATEVEC_LIBDIR) -Xlinker -rpath -Xlinker $(CUSTATEV
 SOURCES := src/main.cu src/runtime.cu src/benchmark.cu
 OBJECTS := $(SOURCES:src/%.cu=build/%.o)
 
-.PHONY: all clean help dependencies
+.PHONY: all clean help dependencies library test-qcs
 all: custatevec_bench
 
 dependencies:
@@ -37,11 +37,33 @@ build/%.o: src/%.cu include/bench.hpp include/device_assignment.hpp include/tran
 custatevec_bench: $(OBJECTS)
 	$(NVCC) $(GENCODE_FLAGS) $(EXTRA_NVCCFLAGS) $^ $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) $(EXTRA_LDFLAGS) -o $@
 
+# Separate PIC object keeps benchmark compile and link flags unchanged.
+library: libqcs.so
+
+build/qcs.o: src/qcs.cu src/qcs_internal.hpp include/qcs.h include/device_assignment.hpp $(CONFIG_MK) Makefile | dependencies
+	@mkdir -p build
+	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) -Xcompiler -fPIC -MMD -MP -c $< -o $@
+
+libqcs.so: build/qcs.o
+	$(NVCC) $(GENCODE_FLAGS) $(EXTRA_NVCCFLAGS) -shared $^ $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) -lcurand $(EXTRA_LDFLAGS) -o $@
+
+build/qcs_c_caller.o: tests/qcs_c_caller.c include/qcs.h
+	@mkdir -p build
+	$(CC) -std=c11 -Iinclude -c $< -o $@
+
+build/qcs_foundation_test: tests/qcs_foundation_test.cu src/qcs_internal.hpp include/device_assignment.hpp build/qcs_c_caller.o libqcs.so
+	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) $< build/qcs_c_caller.o -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) $(EXTRA_LDFLAGS) -o $@
+
+test-qcs: build/qcs_foundation_test
+	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_foundation_test
+
 clean:
-	rm -rf build custatevec_bench
+	rm -rf build custatevec_bench libqcs.so
 
 help:
 	@echo 'make CONFIG_MK=/path/to/existing/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum'
 	@echo 'See README.md for compiler, MPI, library, and additional flag overrides.'
 
 -include $(OBJECTS:.o=.d)
+
+-include build/qcs.d
