@@ -23,7 +23,18 @@ struct qcs_simulator {
     cuDoubleComplex* state = nullptr;
     cudaStream_t stream = nullptr;
     custatevecHandle_t handle = nullptr;
-    // Reserved owners for later stages; no worker may borrow these yet.
+    // Gate scratch never aliases memory borrowed by the distributed worker.
+    void* gate_workspace = nullptr;
+    std::size_t gate_bytes = 0;
+    custatevecCommunicatorDescriptor_t communicator = nullptr;
+    custatevecDistIndexBitSwapSchedulerDescriptor_t scheduler = nullptr;
+    custatevecSVSwapWorkerDescriptor_t worker = nullptr;
+    cudaStream_t transfer_stream = nullptr;
+    cudaEvent_t swap_event = nullptr;
+    void* swap_extra = nullptr;
+    void* transfer = nullptr;
+    std::size_t swap_extra_bytes = 0, transfer_bytes = 0;
+    // Default workspace and timing events retain independent owners.
     void* workspace = nullptr;
     std::size_t workspace_bytes = 0;
     std::vector<cudaEvent_t> events;

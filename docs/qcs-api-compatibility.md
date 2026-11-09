@@ -52,14 +52,71 @@ symbol linking against CUDA is not validated in the current environment.
 | `set_zero_state`, `set_flat_state`, `set_sequential_state`, `set_entangled_state`, `set_random_state`, selected LOAD | Implemented raw initializer behavior; CURAND/file restoration; device execution pending |
 | `set_mapping`, `reinitialize_mapping`, clbit get/string/read/reset | Implemented foundation |
 | C-only `qcs_set_exception_callback` and all C translation wrappers | Implemented; callback exceptions contained |
-| All `gate_*`, numbered SWAPs, `reset`, `reset_measurement_state` | Later task; explicit failure placeholders |
+| All `gate_*` and numbered SWAPs | Implemented; per-function status below; GPU/MPI validation pending |
+| `reset`, `reset_measurement_state` | Later task; explicit failure placeholders |
 | All measurement variants, `expectation_pauli`, `save_statevector`, all event APIs | Later task; explicit failure placeholders |
 
-Mandatory default workspace is allocated now. Swap workers, full-catalog workspace
-preparation, IPC peers, projections and timing events remain future work; no first
-operation can silently bypass those requirements because those operations fail.
+Default workspace is allocated at state allocation. The gate task adds per-call
+workspace queries and independent growable scratch, lazy persistent MPI swap workers,
+reference localization and measured-target projection support. Explicit IPC imports
+are not used; timing events and public measurement remain future work. See
+[gate implementation and validation](qcs-gates.md).
 Host ABI and existing policy tests passed. Real library build/run and distributed
 acceptance criteria remain unverified, as detailed in the linked execution report.
+
+## Gate task: per-function status
+
+Starting implementation commit: `01dc69e`. Every row means both
+`qcs_simulator_gate_NAME` and `qcs_simulator_gate_NAME_cxx`, unless marked C-only.
+All rows are implemented with complex128/FP64 cuStateVec application; host oracle
+checks pass, while actual CUDA/MPI numerical validation remains pending. Basis
+indices in the table use target zero as the low bit; unspecified entries are
+unchanged. Positive/negative controls and mapping handling apply to every row.
+
+| NAME | Target count | Implemented semantics |
+| --- | --- | --- |
+| `global_phase` | 0 | Conditional `exp(i*theta)` scalar |
+| `h` | 1 | Hadamard |
+| `x` | 1 | Pauli X |
+| `y` | 1 | Pauli Y |
+| `z` | 1 | Pauli Z |
+| `s` | 1 | diag(1,i) |
+| `sdg` | 1 | diag(1,-i) |
+| `t` | 1 | diag(1,exp(i*pi/4)) |
+| `tdg` | 1 | diag(1,exp(-i*pi/4)) |
+| `sx` | 1 | Reference square-root-X including its phase |
+| `rx` | 1 | exp(-i*theta*X/2) |
+| `ry` | 1 | exp(-i*theta*Y/2) |
+| `rz` | 1 | exp(-i*theta*Z/2) |
+| `u4` | 1 | exp(i*gamma)*U3(theta,phi,lambda) |
+| `u3` | 1 | U3(theta,phi,lambda) |
+| `u2` | 1 | U3(pi/2,phi,lambda) |
+| `u1` | 1 | diag(1,exp(i*lambda)) |
+| `u` | 1 | Alias of u3 |
+| `p` | 1 | u1(theta) |
+| `swap` | 2/4/6/8 | Consecutive disjoint pairs; all localized before applying |
+| `iswap` | 2 | Exchange basis indices 1 and 2 with factor i |
+| `id` | 1 | Identity with normal gate metadata handling |
+| `sxdg` | 1 | Adjoint square-root-X |
+| `r` | 1 | Equatorial-axis rotation R(theta,phi) |
+| `rxx` | 2 | XX rotation |
+| `ryy` | 2 | YY rotation |
+| `rzz` | 2 | ZZ rotation |
+| `rzx` | 2 | Z on first operand, X on second; theta/2 convention |
+| `dcx` | 2 | Basis cycle 1->2->3->1 |
+| `ecr` | 2 | Pinned reference ECR signs/phases |
+| `xx_plus_yy` | 2 | Rotate indices 1,2 with theta/2 and beta phases |
+| `xx_minus_yy` | 2 | Rotate indices 0,3 with theta/2 and beta phases |
+| `rccx` | 3 | 3<-(-i)*7; 7<-i*3; 5<-(-1)*5 |
+| `rcccx` | 4 | 3<-i*3; 11<-(-i)*11; 7<-15; 15<-(-1)*7 |
+| `swap1` (C-only) | 2 | Exact-count wrapper for 1 consecutive SWAP pairs |
+| `swap2` (C-only) | 4 | Exact-count wrapper for 2 consecutive SWAP pairs |
+| `swap3` (C-only) | 6 | Exact-count wrapper for 3 consecutive SWAP pairs |
+| `swap4` (C-only) | 8 | Exact-count wrapper for 4 consecutive SWAP pairs |
+
+See [QCS gates](qcs-gates.md) for distributed preparation, constraints, executed
+commands and unrun checks. Public post-measurement integration is a release gate
+for the next task; private-mask fixtures do not substitute for measurement APIs.
 
 ## Public inventory and ABI
 

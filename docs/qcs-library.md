@@ -3,9 +3,9 @@
 `libqcs.so` implements the foundation of the public API pinned in
 [qcs-api-compatibility.md](qcs-api-compatibility.md). The installed header is
 `include/qcs.h`, byte-identical to reference revision
-`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. Full circuit simulation through this
-interface is not implemented yet: gates, reset/measurement, expectations, save,
-and timing events currently throw in C++ or return 0/report the callback in C.
+`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. All [gate APIs](qcs-gates.md) now have cuStateVec implementations. Full circuit
+simulation is not complete: reset/measurement, expectations, save, and timing events
+still throw in C++ or return 0/report the callback in C.
 
 ## Build and link
 
@@ -57,8 +57,8 @@ reserves the cuStateVec default workspace, and remembers the selected initialize
 It never calls a setter or reads a file. Reallocation/resizing allocated qubits is
 rejected. N is 1..63 with N>=log2(P); P is a power of two. L=0 scalar slices are
 permitted. Checked state-byte sizing and actual allocation success further constrain
-capacity. This foundation does not execute signed-index cuStateVec gate operations
-at N=63; their limits remain future acceptance work.
+capacity. Signed-index cuStateVec gate limits at N=63 remain installed-version acceptance
+work; the checked local storage bound already excludes unrepresentable allocations.
 
 All six initializers preserve raw reference amplitudes: zero, all-ones flat,
 physical index sequential, unnormalized entangled endpoints (only index 0 at P=1),
@@ -75,12 +75,12 @@ Clbit resize retains existing values and zeroes new entries. Arrays are ascendin
 clbit index, strings descending index plus NUL; the caller supplies enough storage.
 The narrow C getter output types intentionally retain modulo-256 conversion.
 
-Private owners already identify mapping, classical bits, measured/pending masks,
-RNG cursor, workspace and event resources. No swap worker, IPC imports or event
-handles are created in this stage. Later stages must reserve/reprepare all operation
-workspace and peers independently of the first gate; the benchmark's prepared
-workspace limit is unchanged. Placeholder operations never consume RNG, allocate
-resources or return successful results.
+Private owners identify mapping, classical bits, measured/pending masks, RNG cursor,
+workspace and event resources. The [gate implementation](qcs-gates.md) adds independent
+gate scratch and lazily prepared swap resources using MPI transport. Timing events
+and measurement remain later work. The benchmark's prepared workspace limit is
+unchanged. Remaining placeholders never consume RNG, allocate resources or return
+successful results.
 
 ## Distributed errors
 

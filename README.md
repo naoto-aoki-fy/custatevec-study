@@ -5,7 +5,8 @@ harness, independent Hadamard and full-register measurement benchmarks, and
 opt-in untimed small-state checks.
 The common contract is recorded in [SPEC.md](SPEC.md).
 The separate [QCS library foundation](docs/qcs-library.md) builds with `make library`
-and exposes the pinned C/C++ header; circuit operations remain scheduled for later stages.
+and exposes the pinned C/C++ header. [Gate APIs](docs/qcs-gates.md) are implemented;
+measurement and expectation APIs remain scheduled for later stages.
 
 ## Build prerequisites
 

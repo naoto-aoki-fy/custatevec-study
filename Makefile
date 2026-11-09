@@ -23,7 +23,7 @@ CUSTATEVEC_LDFLAGS ?= -L$(CUSTATEVEC_LIBDIR) -Xlinker -rpath -Xlinker $(CUSTATEV
 SOURCES := src/main.cu src/runtime.cu src/benchmark.cu
 OBJECTS := $(SOURCES:src/%.cu=build/%.o)
 
-.PHONY: all clean help dependencies library test-qcs
+.PHONY: all clean help dependencies library test-qcs test-qcs-gates
 all: custatevec_bench
 
 dependencies:
@@ -40,7 +40,7 @@ custatevec_bench: $(OBJECTS)
 # Separate PIC object keeps benchmark compile and link flags unchanged.
 library: libqcs.so
 
-build/qcs.o: src/qcs.cu src/qcs_internal.hpp include/qcs.h include/device_assignment.hpp $(CONFIG_MK) Makefile | dependencies
+build/qcs.o: src/qcs.cu src/qcs_internal.hpp src/qcs_gate.hpp src/qcs_gates.cuh include/transfer_policy.hpp include/qcs.h include/device_assignment.hpp $(CONFIG_MK) Makefile | dependencies
 	@mkdir -p build
 	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) -Xcompiler -fPIC -MMD -MP -c $< -o $@
 
@@ -56,6 +56,12 @@ build/qcs_foundation_test: tests/qcs_foundation_test.cu src/qcs_internal.hpp inc
 
 test-qcs: build/qcs_foundation_test
 	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_foundation_test
+
+build/qcs_gate_test: tests/qcs_gate_test.cu tests/qcs_gate_catalog.hpp tests/qcs_gate_reference.hpp src/qcs_gate.hpp src/qcs_internal.hpp libqcs.so
+	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) -Iinclude $(CUSTATEVEC_CPPFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) $< -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) $(EXTRA_LDFLAGS) -o $@
+
+test-qcs-gates: build/qcs_gate_test
+	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_gate_test
 
 clean:
 	rm -rf build custatevec_bench libqcs.so
