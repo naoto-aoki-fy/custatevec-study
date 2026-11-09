@@ -38,6 +38,24 @@ also supply coherence, shuffled destinations, group remainder and cached-result 
 Source/test inspection is evidence of intended behavior, not proof of GPU execution.
 Reference documentation itself records substantial unverified CUDA/distributed coverage.
 
+## Final review status
+
+The [final compatibility and regression report](qcs-validation.md) records the
+acceptance verdict, actual commands, evidence boundaries and exact cluster
+reproduction. All 139 declarations are implemented; no unsupported placeholder
+remains. The pinned header, type/enum assertions, six host tests and four unchanged
+reference consumers pass object compilation/host checks. The ABI checker now
+supports `--reference-root` and real `--library` linking/dynamic-export coverage.
+The latter has **not run against a CUDA library** here. All GPU/MPI behavioral
+acceptance remains pending, including initializer, gate, measurement, observation,
+event and cleanup paths. Symbol existence alone does not establish completion.
+
+Final review also adds zero-local-capacity expectation/error fixtures, checks
+benchmark launch argument forwarding, and fixes observation device-error cleanup.
+The README links to detailed setup and usage; the previous detailed benchmark
+README content is preserved in [benchmark.md](benchmark.md). No benchmark source,
+CLI, launch-script, numerical, CSV, or timing changes were made.
+
 ## Foundation implementation status
 
 See [QCS library foundation](qcs-library.md) for build/link instructions, ownership,

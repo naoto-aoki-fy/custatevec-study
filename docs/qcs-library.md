@@ -1,10 +1,11 @@
-# QCS library foundation
+# QCS compatibility library
 
-`libqcs.so` implements the foundation of the public API pinned in
-[qcs-api-compatibility.md](qcs-api-compatibility.md). The installed header is
+`libqcs.so` implements all public declarations pinned in
+[qcs-api-compatibility.md](qcs-api-compatibility.md). The public header is
 `include/qcs.h`, byte-identical to reference revision
-`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. All [gate APIs](qcs-gates.md) now have cuStateVec implementations. [Measurement/reset](qcs-measurement.md) APIs are also implemented. Full circuit
-simulation is not complete: expectations, save, and timing events still throw in C++ or return 0/report the callback in C.
+`10a4da5b29a65f3eec0f556344ce06c3ff24072a`. Gates, measurement/reset,
+expectations, file output and events are implemented. Real CUDA/MPI acceptance
+is pending; see the [final review](qcs-validation.md).
 
 ## Build and link
 
@@ -16,6 +17,7 @@ The default `make` target still builds `custatevec_bench`.
 make library CONFIG_MK=/path/to/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum
 cc -std=c11 -Iinclude -c caller.c -o caller.o
 cc caller.o -L. -lqcs -Wl,-rpath,"$PWD" -o caller
+c++ -std=c++17 -Iinclude caller.cpp -L. -lqcs -Wl,-rpath,"$PWD" -o caller-cxx
 # C++ callers can use c++ instead of cc with the same include/link options.
 ```
 
@@ -33,6 +35,8 @@ on only some ranks cannot be repaired by a collective API.
 Create selects/initializes CUDA using the benchmark's launcher/visibility policy,
 checks node-local rank consistency and duplicate UUIDs, creates a private duplicated
 world communicator, compute stream and cuStateVec handle. It does not allocate state.
+For other MPI ABIs, set `QCS_CUSTATEVEC_COMMUNICATOR_LIBRARY` consistently on all
+ranks to a matching cuStateVec MPI communicator plugin.
 Library operations restore the previous current CUDA device. No CUDA context reset
 or caller-owned resource destruction occurs. With multiple visible GPUs, provide
 Open MPI/direct-Slurm local-rank metadata; otherwise expose one distinct GPU per rank.
@@ -77,14 +81,14 @@ The narrow C getter output types intentionally retain modulo-256 conversion.
 Private owners identify mapping, classical bits, measured/pending masks, RNG cursor,
 workspace and event resources. The [gate implementation](qcs-gates.md) adds independent
 gate scratch and lazily prepared swap resources using MPI transport. Measurement owns a separate eight-byte sampling buffer and persistent exhaustion
-flag; timing events remain later work. The benchmark's prepared workspace limit is
-unchanged. Remaining placeholders never consume RNG, allocate resources or return
-successful results.
+flag; events own CUDA timing resources. The benchmark's prepared workspace limit is
+unchanged. No unsupported placeholders remain.
 
 ## Distributed errors
 
-Create, allocation, mapping reinitialization, initialization, measurement/reset
-and disposal are collective. Local configuration/getter/clbit calls and placeholders do not communicate.
+Create, allocation, mapping reinitialization, initialization, measurement/reset,
+expectation, save, elapsed-time queries and disposal are collective. Local
+configuration/getter/clbit calls and event creation/recording do not communicate.
 Allocation validates matching dimensions, initializer and mapping before device work.
 Each local setup/allocation/file/device stage catches exceptions, agrees on the first
 failing rank, broadcasts its bounded diagnostic, and throws on all ranks before any
@@ -144,7 +148,45 @@ an isolated directory there and removes it on success. Use scheduler placement t
 assign one GPU per rank. The test covers C/C++ error reporting, allocation variants,
 all initializer patterns/restoration, physical mapping, narrow getters, clbit
 preservation, multiple handles/ownership, repeated dispose and a file unavailable
-on only rank zero. Run the existing benchmark checks from README separately,
+on only rank zero. Run the existing benchmark checks from benchmark.md separately,
 including multi-node transport. OOM/transport fault injection, sanitizers, caller
 device restoration failures and target installed-version validation remain required
 cluster checks; no such results are claimed here.
+
+## Minimal C usage
+
+Check every return value in application code. This example shows the required
+allocation/initialization separation; allocation alone leaves amplitudes undefined.
+
+```c
+#include <qcs.h>
+int main(void) {
+    qcs_simulator *sim = NULL;
+    double expectation;
+    if (!qcs_simulator_create(&sim)) return 1;
+    int ok = qcs_simulator_set_num_qubits(sim, 8)
+        && qcs_simulator_allocate_memory(sim)
+        && qcs_simulator_set_zero_state(sim)
+        && qcs_simulator_expectation_pauli(sim, NULL, NULL, 0, 1.0, &expectation);
+    int closed = qcs_simulator_destroy(sim);
+    return ok && closed && expectation == 1.0 ? 0 : 1;
+}
+```
+
+C++ consumers use the same header and throwing `_cxx` entry points; both
+`allocate_memory_cxx(sim)` and `allocate_memory_cxx(sim, initial_state)` are available.
+Do not call C++ entry points across a C ABI boundary. C event IDs and getter outputs
+are intentionally `bit_t` (8 bits), whereas C++ forms return `int`.
+
+Expectations return `coefficient * <psi|P|psi>` without normalization. Arrays name
+distinct logical qubits. Identity permits zero count and null arrays. Pending
+measurements are materialized without clearing outcomes, clbits or RNG state.
+Nonidentity support must fit L local qubits; localization retains its new mapping.
+The current contraction stages local complex128 data on the host.
+
+Save writes native complex128 pairs in logical order; LOAD reads physical rank
+slices from `statevector_input.bin`. A nonidentity mapping means save/load is not
+an interchangeable logical-order round trip. Save applies pending projections.
+Events record on the compute stream, wait for start and stop, and return the
+rank-maximum elapsed CUDA time in seconds. This differs from the benchmark's
+MPI_Wtime/device-synchronization timing contract.
