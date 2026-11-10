@@ -26,6 +26,8 @@ flag variables. The executable finds `libqcs.so` relative to its own location
 libraries must also be available through the configured runtime search paths or
 site environment.
 
+For the preserved upstream programs, see [imported examples](qcs-examples.md).
+
 A minimal C circuit (save as `circuit.c`):
 
 ```c

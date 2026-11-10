@@ -1,0 +1,13 @@
+{
+  "sharedlibrary/ghz.c": "9386b7643b8e047aaa33907e87b087ee693f5b612897fd91ca182ef9dc564c19",
+  "sharedlibrary/hadamard-measure.c": "2a6c0ff907c3881127d80021e767628d53aebc39bdc571025308da392719270c",
+  "sharedlibrary/hadamard-single.c": "0a48f21851b24cd698663c47c3f9353822ee5be7157e517a9ceaa2b71b72cf83",
+  "sharedlibrary/hadamard-whole.c": "f4440c664dbbfaa0d1a295e4ae167b404a0c3e2bfeec683feb18da0783768624",
+  "sharedlibrary/measure_circuit.c": "3a343098ef055604332e1ac026f6c38d33f6289b1c8796b10fdbffdc3d711f6c",
+  "standalone/ghz_circuit.c": "af2219ff3a95d4a6b1ab5851e98bf29394668e6eab6bafa6df5b697faffd9f57",
+  "standalone/hadamard-measure.c": "22c11781f110b8332d45f6d227c19a401d583a04f678727c8e7566a0cc41f47b",
+  "standalone/hadamard-single.c": "3334ec9d40a8c140f4151a5e5b6c837fb51932a0d66f853439d222a0bd0ca4c6",
+  "standalone/hadamard-whole.c": "18423508c41c4cdde8595a0284eca0ce71755289e97a92aaa5d899be27c1ce35",
+  "standalone/measure-only.c": "cfab4d9d14628b1409f6be70d26dca56f39dcb6c162f93fe567aaaf20378fd84",
+  "standalone/measure_circuit.c": "749b75b43634e5c858e4d027599d86f0967a680110d640c50054c1f73cdaf858"
+}

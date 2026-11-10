@@ -19,6 +19,7 @@ across ranks; host submission gaps and MPI waits between markers may contribute.
 
 - [Benchmark setup, CLI, launch scripts and checks](docs/benchmark.md)
 - [Benchmark contract](SPEC.md)
+- [Imported example builds, execution and validation](docs/qcs-examples.md)
 - [Standalone QCS CLI and circuit compilation](docs/qcs-cli.md)
 - [QCS build/link and API usage](docs/qcs-library.md)
 - [Complete public API inventory](docs/qcs-api-compatibility.md)

@@ -2,7 +2,7 @@
 CONFIG_MK ?= config.mk
 
 # clean and help are usable even before a site configuration is supplied.
-ifneq ($(strip $(filter-out clean help,$(MAKECMDGOALS))$(if $(MAKECMDGOALS),,all)),)
+ifneq ($(strip $(filter-out clean help examples-standalone test-qcs-examples-host,$(MAKECMDGOALS))$(if $(MAKECMDGOALS),,all)),)
 ifeq ($(wildcard $(CONFIG_MK)),)
 $(error Missing CONFIG_MK='$(CONFIG_MK)'. Supply an existing nvccoptions config.mk; see README.md)
 endif
@@ -110,3 +110,25 @@ bin/qcs: build/qcs_main.o build/qcs_args.o libqcs.so
 	$(NVCC) $(GENCODE_FLAGS) $(EXTRA_NVCCFLAGS) build/qcs_main.o build/qcs_args.o -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) -ldl -Xlinker -rpath -Xlinker '$$ORIGIN/..' $(EXTRA_LDFLAGS) -o $@
 
 -include build/qcs_main.d build/qcs_args.d
+
+# Examples are opt-in; standalone circuits need only a host C compiler.
+STANDALONE_EXAMPLES := $(patsubst examples/standalone/%.c,build/examples/standalone/%.so,$(wildcard examples/standalone/*.c))
+SHARED_EXAMPLES := $(patsubst examples/sharedlibrary/%.c,build/examples/sharedlibrary/%,$(wildcard examples/sharedlibrary/*.c))
+.PHONY: examples examples-standalone examples-sharedlibrary test-qcs-examples-host
+examples: examples-standalone examples-sharedlibrary
+examples-standalone: $(STANDALONE_EXAMPLES)
+examples-sharedlibrary: $(SHARED_EXAMPLES)
+
+build/examples/standalone/%.so: examples/standalone/%.c include/qcs.h compile_circuit.sh Makefile
+	@mkdir -p $(@D)
+	CC="$(CC)" CPPFLAGS="$(CPPFLAGS)" CFLAGS="$(CFLAGS) $(HOST_CFLAGS)" LDFLAGS="$(LDFLAGS)" ./compile_circuit.sh $< -o $@
+
+build/examples/sharedlibrary/%.o: examples/sharedlibrary/%.c include/qcs.h Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(HOST_CFLAGS) -Iinclude -c $< -o $@
+
+build/examples/sharedlibrary/%: build/examples/sharedlibrary/%.o libqcs.so
+	$(NVCC) $(GENCODE_FLAGS) $(EXTRA_NVCCFLAGS) $< -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) -Xlinker -rpath -Xlinker '$$ORIGIN/../../..' $(EXTRA_LDFLAGS) -o $@
+
+test-qcs-examples-host:
+	python3 tests/check_qcs_examples.py
