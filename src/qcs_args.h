@@ -50,7 +50,7 @@ struct gengetopt_args_info
   char * output_statevector_arg;	/**< @brief Write final statevector to the specified file.  */
   char * output_statevector_orig;	/**< @brief Write final statevector to the specified file original value given at command line.  */
   const char *output_statevector_help; /**< @brief Write final statevector to the specified file help description.  */
-  
+
   char * initial_state_arg; /**< @brief Initial state (default='zero'). */
   char * initial_state_orig; /**< @brief Original initial-state option value. */
   const char *initial_state_help; /**< @brief Initial-state help description. */
@@ -152,7 +152,7 @@ void cmdline_parser_print_help(void);
 void cmdline_parser_print_version(void);
 
 /**
- * Initializes all the fields a cmdline_parser_params structure 
+ * Initializes all the fields a cmdline_parser_params structure
  * to their default values
  * @param params the structure to initialize
  */
