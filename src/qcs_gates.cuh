@@ -132,6 +132,7 @@ void project_targets(qcs_simulator& s,std::uint64_t release) {
 void operate_gate(qcs_simulator* sim,qcs_gate::Kind kind,std::array<double,4> angles,
                   const bit_num_t* target,bit_num_t nt,const bit_num_t* negative,bit_num_t nn,
                   const bit_num_t* positive,bit_num_t np,int numbered_width=0) {
+    qcs_gate::Timer timer;
     auto& s=live(sim);
     const int local=s.num_qubits-s.global_bits;
     same(s.comm,int(kind)); same(s.comm,nt); same(s.comm,nn); same(s.comm,np); same(s.comm,numbered_width);
@@ -186,7 +187,10 @@ void operate_gate(qcs_simulator* sim,qcs_gate::Kind kind,std::array<double,4> an
         auto root=mask; check_mpi(MPI_Bcast(&root,1,MPI_UINT64_T,0,s.comm));
         phase(s.comm,[&] { require(mask==root,"Measurement metadata differs across ranks"); });
     }
-    if (!permitted) return;
+    if (!permitted) {
+        timer.finish(s.rank,s.gate_timing_sequence,qcs_gate::name(kind),true);
+        return;
+    }
     std::vector<int32_t> physical_targets, controls, values;
     bool active=true;
     phase(s.comm,[&] {
@@ -251,4 +255,5 @@ void operate_gate(qcs_simulator* sim,qcs_gate::Kind kind,std::array<double,4> an
         });
         s.measured_mask&=~target_mask; s.measured_value&=s.measured_mask; s.pending_mask&=s.measured_mask;
     } catch (...) { s.poisoned=true; throw; }
+    timer.finish(s.rank,s.gate_timing_sequence,qcs_gate::name(kind),false);
 }

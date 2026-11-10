@@ -25,6 +25,7 @@ struct qcs_simulator {
     cuDoubleComplex* state = nullptr;
     cudaStream_t stream = nullptr;
     custatevecHandle_t handle = nullptr;
+    unsigned long long gate_timing_sequence = 0;
     // Gate scratch never aliases memory borrowed by the distributed worker.
     void* gate_workspace = nullptr;
     std::size_t gate_bytes = 0;

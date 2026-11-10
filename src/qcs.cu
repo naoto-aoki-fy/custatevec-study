@@ -2,6 +2,7 @@
 #include "device_assignment.hpp"
 #include "transfer_policy.hpp"
 #include "qcs_gate.hpp"
+#include "qcs_gate_timing.hpp"
 #include "qcs_measurement.hpp"
 #include "qcs_observation.hpp"
 #include <curand.h>

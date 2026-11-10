@@ -91,7 +91,7 @@ build/qcs_observation_test: tests/qcs_observation_test.cu src/qcs_internal.hpp l
 test-qcs-observation: build/qcs_observation_test
 	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_observation_test
 
-build/qcs.o: src/qcs_observation.hpp
+build/qcs.o: src/qcs_observation.hpp src/qcs_gate_timing.hpp
 
 # Host-only CLI sources; vendor nvcc flags stay on the nvcc driver.
 # HOST_CFLAGS accepts ordinary host compiler flags, not nvcc -Xcompiler flags.

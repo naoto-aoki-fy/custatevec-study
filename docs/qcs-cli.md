@@ -96,3 +96,38 @@ are unavailable. Actual linkage to the cuStateVec implementation and GPU/MPI
 execution have not been validated. On a configured machine, build and run the
 minimal circuit above and the existing library/benchmark regression checks linked
 from [QCS validation](qcs-validation.md).
+
+## Optional per-gate timing
+
+Set `QCS_GATE_TIMING=1` explicitly to report each successful gate API call:
+
+```sh
+QCS_GATE_TIMING=1 mpiexec -n 1 ./bin/qcs --num-samples 3 ./circuit.so
+```
+
+Export this variable to every worker process using your launcher's environment
+forwarding options for multi-node runs. The same setting works for applications
+using `libqcs.so` directly. Other values, or an unset variable, disable reporting.
+
+Each rank writes a JSON line to stderr with `type: "gate_timing"`, `rank`,
+`gate_index` (zero-based per simulator, continuing across samples), `gate`
+(the canonical gate name), `skipped`, and `elapsed_time` in seconds. Stdout retains
+its existing sample format. Concurrent rank output can interleave; use launcher
+per-rank stderr files when collecting distributed results.
+
+Timing uses a monotonic host clock around the gate operation, including validation,
+workspace preparation, MPI communication, localization and GPU completion. Gate
+execution already synchronizes its CUDA stream before returning. These are local
+rank durations, not GPU kernel-only times or a maximum across ranks. Initialization,
+measurement and output are excluded. Contradictory measured controls produce a
+record with `skipped: true`; invalid or failed calls produce no timing record.
+A multi-target SWAP call produces one record for the whole call, and aliases use
+the canonical gate name. Gates called internally by reset are also recorded.
+Reporting adds overhead, so use disabled runs for baseline circuit timings.
+
+The host reporting check can run without CUDA or MPI:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror tests/qcs_gate_timing_host_test.cpp -o /tmp/qcs_gate_timing_test
+/tmp/qcs_gate_timing_test
+```

@@ -13,6 +13,45 @@ using Complex = std::complex<double>;
 enum class Kind { global_phase, h, x, y, z, s, sdg, t, tdg, sx, sxdg,
     rx, ry, rz, u4, u3, u2, u1, u, p, swap, iswap, id, r,
     rxx, ryy, rzz, rzx, dcx, ecr, xx_plus_yy, xx_minus_yy, rccx, rcccx };
+inline const char* name(Kind kind) {
+    switch (kind) {
+    case Kind::global_phase: return "global_phase";
+    case Kind::h: return "h";
+    case Kind::x: return "x";
+    case Kind::y: return "y";
+    case Kind::z: return "z";
+    case Kind::s: return "s";
+    case Kind::sdg: return "sdg";
+    case Kind::t: return "t";
+    case Kind::tdg: return "tdg";
+    case Kind::sx: return "sx";
+    case Kind::sxdg: return "sxdg";
+    case Kind::rx: return "rx";
+    case Kind::ry: return "ry";
+    case Kind::rz: return "rz";
+    case Kind::u4: return "u4";
+    case Kind::u3: return "u3";
+    case Kind::u2: return "u2";
+    case Kind::u1: return "u1";
+    case Kind::u: return "u";
+    case Kind::p: return "p";
+    case Kind::swap: return "swap";
+    case Kind::iswap: return "iswap";
+    case Kind::id: return "id";
+    case Kind::r: return "r";
+    case Kind::rxx: return "rxx";
+    case Kind::ryy: return "ryy";
+    case Kind::rzz: return "rzz";
+    case Kind::rzx: return "rzx";
+    case Kind::dcx: return "dcx";
+    case Kind::ecr: return "ecr";
+    case Kind::xx_plus_yy: return "xx_plus_yy";
+    case Kind::xx_minus_yy: return "xx_minus_yy";
+    case Kind::rccx: return "rccx";
+    case Kind::rcccx: return "rcccx";
+    }
+    return "unknown";
+}
 inline int arity(Kind kind) {
     switch (kind) {
     case Kind::global_phase: return 0;
