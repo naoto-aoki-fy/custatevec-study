@@ -280,7 +280,16 @@ every rank (31 at the production default). The explicit row-major matrix is
 computation, one target, and no controls. Gates are never fused; initialization
 is not used as a substitute for the gate sequence.
 
-Both jobs share initialization, workspace preparation, and gate application.
+`--job hadamard-low` applies H in ascending logical order to q=0 through
+min(5,N)-1, making min(5,N) gate calls per repetition. `--job hadamard-high`
+applies H in ascending logical order to q=5 through N-1, making max(N-5,0)
+gate calls. For N<=5, `hadamard-high` applies no gates and leaves the initialized
+|0> state unchanged. For N=6, the low job targets q=0..4 and the high job targets
+only q=5. Selection always uses logical indices, including after swaps.
+
+All four jobs share initialization, workspace preparation, and gate application,
+as well as MPI execution, warm-ups, timing, and CSV output. The CSV job column
+records the exact selected name; `measurement_bits` is empty.
 Reverse order refers to logical indices, regardless of their changing physical
 positions. Their final logical states agree, but their swap sequences and timing
 can differ. Both use the same swap resources and `--p2p auto|off|required` peer
@@ -557,7 +566,7 @@ recomputes actual masses for every selected initial state.
 
 | CSV column | Meaning |
 | --- | --- |
-| `job` | Selected `hadamard`, `hadamard-reverse`, or `measure` operation |
+| `job` | Selected `hadamard`, `hadamard-reverse`, `hadamard-low`, `hadamard-high`, or `measure` operation |
 | `iteration` | One-based measured repetition; excludes warm-ups |
 | `nqubits` | Total logical qubits across the distributed state |
 | `mpi_ranks` | Number of world ranks sharing that state |

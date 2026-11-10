@@ -31,6 +31,7 @@ The finished program must provide three independently executable jobs:
 
 - `--job hadamard`: initialize an N-qubit state to |0>^N and apply one Hadamard gate to every logical qubit in ascending order q=0,...,N-1.
 - `--job hadamard-reverse`: the same initialization and separate gate calls in descending logical order q=N-1,...,0. Share preparation and gate application with `hadamard`, including physical-bit-0 localization, retained final mapping, and identity mapping at the start of each repetition. Timing, warm-ups, precision, and CSV behavior are identical; record `hadamard-reverse` in the job column with empty measurement bits.
+- `--job hadamard-low` / `--job hadamard-high`: reuse the Hadamard job with ascending logical targets 0 through min(5,N)-1 / 5 through N-1 respectively. The high range is empty for N<=5. Preserve mapping updates, physical-bit-0 localization, initialization, MPI resources, warm-ups, timing, and CSV behavior; record the selected job name with empty measurement bits.
 - `--job measure`: directly initialize the selected normalized N-qubit state (uniform by default) and perform one joint computational-basis measurement of the complete register, including state collapse.
 
 `--check-hadamard` validates both orders with repeated zero-state runs, explicit

@@ -111,3 +111,27 @@ bitwise trajectory matching or specific timing magnitudes. Add site-specific
 failure-injection and memory-boundary checks. Record results here only after
 actual execution; none of these procedures is claimed to have run in this
 reorganization.
+
+### Hadamard range boundaries
+
+The host target-order test covers N=4,5,6 as well as smaller and larger registers:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -pedantic -Iinclude tests/hadamard_order_test.cpp -o /tmp/hadamard_order_test
+/tmp/hadamard_order_test
+```
+
+On a configured GPU/MPI host, check full logical amplitudes against the CPU
+reference (including asymmetric complex input and every selected gate prefix):
+
+```sh
+for n in 4 5 6; do
+  mpiexec -n 2 ./custatevec_bench --check-hadamard --nqubits "$n"
+  for job in hadamard hadamard-reverse hadamard-low hadamard-high; do
+    mpiexec -n 2 ./custatevec_bench --job "$job" --nqubits "$n" --warmup 1 --repeats 2 > "$job-$n.csv"
+  done
+done
+```
+
+Each CSV should contain two data rows with the selected job name, six columns,
+and empty measurement bits, including the empty high ranges at N=4 and N=5.
