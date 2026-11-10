@@ -1,16 +1,16 @@
 # Distributed cuStateVec benchmark
 
 Detailed benchmark setup and usage, moved from README. Historical implementation
-notes below describe their original execution status; the current host checks and
-unrun GPU/MPI acceptance work are recorded in [the final review](qcs-validation.md).
+notes below describe their original execution status; current evidence and
+unrun GPU/MPI acceptance work are recorded in [VALIDATION.md](VALIDATION.md).
 
 The implementation provides a C++17/CUDA/MPI runtime, a reusable benchmark timing
 harness, independent Hadamard and full-register measurement benchmarks, and
 opt-in untimed small-state checks.
-The common contract is recorded in [SPEC.md](../SPEC.md).
+The common contract is recorded in [SPEC.md](SPEC.md).
 The separate [QCS compatibility library](qcs-library.md) builds with `make library`
 and implements gates, measurement/reset, expectations, statevector export and events.
-See the [final validation report](qcs-validation.md) for execution limits.
+See [VALIDATION.md](VALIDATION.md) for execution limits.
 
 ## Build prerequisites
 

@@ -31,7 +31,7 @@ Reference links below are pinned; none means the default branch:
 
 Implementation evidence is [bench.hpp](../include/bench.hpp), [runtime.cu](../src/runtime.cu),
 [benchmark.cu](../src/benchmark.cu), [main.cu](../src/main.cu), [Makefile](../Makefile),
-[SPEC.md](../SPEC.md), [README.md](../README.md), and
+[SPEC.md](SPEC.md), [README.md](../README.md), and
 [measurement-order.md](measurement-order.md). Host policy test sources were inspected.
 The public measurement integration tests (`tests/measurement_integration_test.cpp`)
 also supply coherence, shuffled destinations, group remainder and cached-result fixtures.
@@ -40,7 +40,7 @@ Reference documentation itself records substantial unverified CUDA/distributed c
 
 ## Final review status
 
-The [final compatibility and regression report](qcs-validation.md) records the
+The [QCS compatibility and regression report](qcs-validation.md) records the
 acceptance verdict, actual commands, evidence boundaries and exact cluster
 reproduction. All 139 declarations are implemented; no unsupported placeholder
 remains. The pinned header, type/enum assertions, six host tests and four unchanged

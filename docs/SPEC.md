@@ -1,5 +1,19 @@
 # Distributed cuStateVec benchmark specification
 
+## Internal requirement notes
+
+The distributed-runtime section requires at least one local qubit, expressed as
+`N > log2(P)`. The QCS compatibility section separately describes support for
+`N >= log2(P)` and scalar local slices for applicable operations. These are
+distinct scopes (benchmark runtime versus QCS library); do not treat the QCS
+edge case as a relaxation of the benchmark constraint. Target-cluster behavior
+for either boundary remains subject to validation.
+
+This document is the authoritative intended contract. It does not assert that
+the implementation meets the contract or that any build or runtime checks pass.
+Implementation observations and execution evidence are tracked in
+[DEVELOPMENT.md](DEVELOPMENT.md) and [VALIDATION.md](VALIDATION.md).
+
 This is the common contract for all four sequential stages:
 1. Build system, distributed runtime, and benchmark infrastructure.
 2. Hadamard workload.
@@ -291,6 +305,7 @@ to stderr outside timing. Preserve CSV, MPI_MAX, all communication within the
 timed operation, complex128/FP64, gate sequence and logical mapping. Rounding
 and the least-memory rank can substantially reduce the allocated fraction.
 
-See README.md for unrun host tests, cluster correctness commands and sequential
-four-combination P2P/policy A/B runs. No tests or validation were run for this
-change, as requested by the user.
+See [benchmark.md](benchmark.md) for practical usage and
+[VALIDATION.md](VALIDATION.md) for deferred host tests, cluster correctness
+commands and sequential four-combination P2P/policy A/B runs. No tests or
+validation were run for this change, as requested by the user.
