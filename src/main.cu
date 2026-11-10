@@ -34,7 +34,7 @@ Options parse_options(int argc, char** argv) {
             key != "--warmup" && key != "--seed" && key != "--communicator" &&
             key != "--communicator-library" && key != "--p2p" &&
             key != "--transfer-buffer" && key != "--transfer-buffer-fraction" &&
-            key != "--initial-state")
+            key != "--initial-state" && key != "--gate-timings")
             throw std::runtime_error("Unknown option: " + key);
         if (++i == argc) throw std::runtime_error("Missing value for " + key);
         const std::string value = argv[i];
@@ -42,6 +42,12 @@ Options parse_options(int argc, char** argv) {
             if (job_selected) throw std::runtime_error("Select --job exactly once");
             job_selected = true;
             o.job = value;
+            continue;
+        }
+        if (key == "--gate-timings") {
+            if (value.empty() || !o.gate_timings.empty())
+                throw std::runtime_error("--gate-timings requires one nonempty output path");
+            o.gate_timings = value;
             continue;
         }
         if (key == "--initial-state") {
@@ -75,6 +81,8 @@ Options parse_options(int argc, char** argv) {
     if (initial_state_selected && (o.job != "measure" || o.smoke || o.check_hadamard || o.check_measure))
         throw std::runtime_error("--initial-state is only valid with --job measure, not check modes");
     if (o.help) return o;
+    if (!o.gate_timings.empty() && (o.smoke || o.check_hadamard || o.check_measure))
+        throw std::runtime_error("--gate-timings is only valid with --job");
     if (static_cast<int>(o.smoke) + static_cast<int>(o.check_hadamard) + static_cast<int>(o.check_measure) +
         static_cast<int>(!o.job.empty()) != 1)
         throw std::runtime_error("Select exactly one of --job hadamard, --job hadamard-reverse, --job hadamard-low, --job hadamard-high, --job measure, --smoke-check, --check-hadamard, or --check-measure");
@@ -100,6 +108,7 @@ void print_help() {
               << "  --repeats R       measured repetitions (default 128)\n"
               << "  --warmup W        separate warm-ups (default 0)\n"
               << "  --initial-state uniform|flat|zero|ghz  --job measure only (default uniform; flat aliases uniform)\n"
+              << "  --gate-timings PATH  write per-gate CUDA event timings to a separate CSV (opt-in)\n"
               << "  --seed S          reproducible uint64 seed (default 1)\n"
               << "  --communicator auto|openmpi|mpich|external\n"
               << "  --communicator-library PATH  MPI library or external communicator plugin\n"

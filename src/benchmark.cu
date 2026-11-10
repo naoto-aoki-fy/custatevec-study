@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -50,7 +51,9 @@ public:
     template<class AfterGate>
     void execute_sequence(Runtime& runtime, AfterGate after_gate) {
         for_each_hadamard_target(runtime.nqubits, reverse_, [&](int q) {
+            begin_gate(runtime, q);
             apply_hadamard(runtime, q);
+            end_gate(runtime);
             after_gate(q);
         }, range_);
     }
@@ -90,7 +93,10 @@ public:
         else fail("Unknown measurement initial state: " + initial_state_);
     }
     JobResult execute(Runtime& runtime, std::uint64_t seed, std::uint64_t repetition) override {
-        return measure(runtime, measurement_draw(seed, repetition));
+        begin_gate(runtime, -1);
+        const auto result = measure(runtime, measurement_draw(seed, repetition));
+        end_gate(runtime);
+        return result;
     }
     // Untimed assertion used by --check-measure.
     void check_ordering() const {
@@ -468,7 +474,34 @@ void check_measure(Runtime& runtime) {
     check("independently GPU-initialized GHZ state, both outcomes", "ghz");
 }
 
+void Job::begin_gate(Runtime& runtime, int logical_qubit) {
+    if (!profile_gates) return;
+    if (timed_gate_count >= gate_timings.size()) fail("Per-gate timing capacity exceeded");
+    auto& timing = gate_timings[timed_gate_count];
+    timing.logical_qubit = logical_qubit;
+    CUDA_TRY(cudaEventRecord(timing.start, runtime.stream));
+}
+
+void Job::end_gate(Runtime& runtime) {
+    if (!profile_gates) return;
+    CUDA_TRY(cudaEventRecord(gate_timings[timed_gate_count].stop, runtime.stream));
+    ++timed_gate_count;
+}
+
 void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
+    std::ofstream gate_output;
+    if (!options.gate_timings.empty()) {
+        if (runtime.topology.rank == 0) {
+            gate_output.open(options.gate_timings);
+            if (!gate_output) fail("Cannot open gate timing CSV: " + options.gate_timings);
+            gate_output << "job,iteration,nqubits,mpi_ranks,gate_index,gate,logical_qubit,elapsed_seconds\n";
+        }
+        job.gate_timings.resize(runtime.nqubits);
+        for (auto& timing : job.gate_timings) {
+            CUDA_TRY(cudaEventCreateWithFlags(&timing.start, cudaEventBlockingSync));
+            CUDA_TRY(cudaEventCreateWithFlags(&timing.stop, cudaEventBlockingSync));
+        }
+    }
     job.prepare(runtime);
     runtime.finalize_preparation();
     // Separate, timing-enabled events on this rank's already assigned GPU.
@@ -476,6 +509,8 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
     CUDA_TRY(cudaEventCreateWithFlags(&start_event, cudaEventBlockingSync));
     CUDA_TRY(cudaEventCreateWithFlags(&stop_event, cudaEventBlockingSync));
     const auto one = [&](std::uint64_t repetition, bool measured, int iteration) {
+        job.profile_gates = measured && !options.gate_timings.empty();
+        job.timed_gate_count = 0;
         runtime.reset_mapping();
         job.initialize(runtime, options.seed, repetition);
         runtime.synchronize();
@@ -490,6 +525,23 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
         CUDA_TRY(cudaEventElapsedTime(&elapsed_ms, start_event, stop_event));
         const double elapsed = static_cast<double>(elapsed_ms) / 1000.0;
         if (measured) {
+            // All event reads, rank reductions and output occur after the total timer.
+            for (std::size_t g = 0; g < job.timed_gate_count; ++g) {
+                const auto& timing = job.gate_timings[g];
+                float gate_ms = 0.0f;
+                CUDA_TRY(cudaEventElapsedTime(&gate_ms, timing.start, timing.stop));
+                const double seconds = static_cast<double>(gate_ms) / 1000.0;
+                double maximum_gate = 0.0;
+                MPI_TRY(MPI_Reduce(&seconds, &maximum_gate, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD));
+                if (runtime.topology.rank == 0) {
+                    gate_output << options.job << ',' << iteration << ',' << options.nqubits << ','
+                                << runtime.topology.ranks << ',' << g + 1 << ','
+                                << (timing.logical_qubit < 0 ? "measure" : "h") << ',';
+                    if (timing.logical_qubit >= 0) gate_output << timing.logical_qubit;
+                    gate_output << ',' << std::setprecision(17) << maximum_gate << '\n';
+                    if (!gate_output) fail("Gate timing CSV output failed");
+                }
+            }
             double maximum = 0.0;
             MPI_TRY(MPI_Reduce(&elapsed, &maximum, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD));
             if (runtime.topology.rank == 0) {
@@ -513,6 +565,16 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
         std::cout << "job,iteration,nqubits,mpi_ranks,elapsed_seconds,measurement_bits\n";
     for (int i = 0; i < options.repeats; ++i)
         one(static_cast<std::uint64_t>(i), true, i + 1);
+    job.profile_gates = false;
+    for (auto& timing : job.gate_timings) {
+        CUDA_TRY(cudaEventDestroy(timing.stop));
+        CUDA_TRY(cudaEventDestroy(timing.start));
+    }
+    job.gate_timings.clear();
+    if (runtime.topology.rank == 0 && gate_output.is_open()) {
+        gate_output.close();
+        if (!gate_output) fail("Gate timing CSV close failed");
+    }
     CUDA_TRY(cudaEventDestroy(stop_event));
     CUDA_TRY(cudaEventDestroy(start_event));
     // Detect buffered output errors while MPI is still active, so peers abort

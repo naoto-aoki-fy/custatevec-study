@@ -27,6 +27,7 @@ void sv_check(custatevecStatus_t status, const char* expression);
 
 struct Options {
     std::string job;
+    std::string gate_timings;
     std::string initial_state = "uniform";
     int nqubits = 31;
     int repeats = 128;
@@ -122,6 +123,16 @@ struct JobResult {
 class Job {
 public:
     virtual ~Job() = default;
+    // Allocated by the harness only for opt-in profiling, outside repetitions.
+    struct GateTiming {
+        cudaEvent_t start = nullptr, stop = nullptr;
+        int logical_qubit = -1; // -1 denotes full-register measurement
+    };
+    std::vector<GateTiming> gate_timings;
+    bool profile_gates = false;
+    std::size_t timed_gate_count = 0;
+    void begin_gate(Runtime& runtime, int logical_qubit);
+    void end_gate(Runtime& runtime);
     virtual void prepare(Runtime&) = 0; // reusable descriptors/workspaces, before repetitions
     virtual void initialize(Runtime&, std::uint64_t seed, std::uint64_t repetition) = 0;
     // Complete all outstanding MPI requests before returning. GPU completion is

@@ -909,3 +909,40 @@ for ranks in (1, 2):
 print('CUDA event benchmark CSV checks passed')
 PYCSV
 ```
+
+## Optional per-gate timings
+
+Pass `--gate-timings PATH` to write a separate CSV from world rank 0. The file
+is overwritten; choose a path distinct from redirected stdout and stderr.
+For example, on a configured GPU/MPI system:
+
+```sh
+mpiexec -n 2 ./custatevec_bench --job hadamard --nqubits 8 \
+  --warmup 1 --repeats 3 --gate-timings gates.csv > total.csv
+```
+
+The existing stdout CSV is unchanged. The additional CSV has columns
+`job,iteration,nqubits,mpi_ranks,gate_index,gate,logical_qubit,elapsed_seconds`.
+Iterations and gate indices start at 1; logical qubits start at 0. Each Hadamard
+produces one `h` row in execution order, including any target-localization swap
+and communication. `measure` produces one row per repetition for the complete
+joint measurement and collapse, with an empty logical-qubit field. An empty
+`hadamard-high` sequence produces only the header. Warm-ups are excluded.
+
+Timing-enabled CUDA events bracket each operation on the compute stream. Events
+are allocated before preparation finalization and reused between repetitions.
+The harness waits for the repetition's stop event before reading durations,
+reducing each duration with MPI_MAX and writing results. No per-gate barriers or
+synchronizations are added. As with total timings, host submission gaps and
+communication waits between markers can contribute. Per-gate event submission
+adds overhead to profiled total timings; use an unprofiled run for baseline
+performance. The sum of per-gate rank maxima need not equal the total rank
+maximum. Without this option no per-gate events or output files are created.
+Check modes reject the option.
+
+Target validation should cover all five jobs, one and multiple ranks, warm-ups,
+reverse order, and `hadamard-high` with N<=5. Check row counts (R*N for full
+Hadamard, R*min(5,N) for low, R*max(N-5,0) for high, R for measure), execution
+order, finite nonnegative durations, and the unchanged total CSV schema. Also
+exercise an unwritable path and check-mode rejection. CUDA compilation and these
+GPU/MPI checks require the site toolchain and are not verified locally.
