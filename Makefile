@@ -74,7 +74,7 @@ test-qcs-measurement: build/qcs_measurement_test
 	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_measurement_test
 
 clean:
-	rm -rf build custatevec_bench libqcs.so
+	rm -rf build custatevec_bench libqcs.so bin/qcs
 
 help:
 	@echo 'make CONFIG_MK=/path/to/existing/config.mk CUSTATEVEC_ROOT=/path/to/cuquantum'
@@ -92,3 +92,21 @@ test-qcs-observation: build/qcs_observation_test
 	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH ./build/qcs_observation_test
 
 build/qcs.o: src/qcs_observation.hpp
+
+# Host-only CLI sources; vendor nvcc flags stay on the nvcc driver.
+# HOST_CFLAGS accepts ordinary host compiler flags, not nvcc -Xcompiler flags.
+HOST_CFLAGS ?= -O2 -std=c11
+
+build/qcs_args.o: src/qcs_args.c src/qcs_args.h Makefile
+	@mkdir -p build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(HOST_CFLAGS) -Isrc -MMD -MP -c $< -o $@
+
+build/qcs_main.o: src/qcs_main.cpp src/qcs_args.h include/qcs.h $(CONFIG_MK) Makefile
+	@mkdir -p build
+	$(NVCC) $(CFLAGS_VENDOR) $(GENCODE_FLAGS) $(PROJECT_FLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_NVCCFLAGS) -Iinclude -Isrc -MMD -MP -c $< -o $@
+
+bin/qcs: build/qcs_main.o build/qcs_args.o libqcs.so
+	@mkdir -p bin
+	$(NVCC) $(GENCODE_FLAGS) $(EXTRA_NVCCFLAGS) build/qcs_main.o build/qcs_args.o -L. -lqcs $(LDFLAGS_VENDOR) $(CUSTATEVEC_LDFLAGS) -ldl -Xlinker -rpath -Xlinker '$$ORIGIN/..' $(EXTRA_LDFLAGS) -o $@
+
+-include build/qcs_main.d build/qcs_args.d

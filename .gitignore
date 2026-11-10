@@ -1,3 +1,5 @@
 /build/
 /custatevec_bench
 /config.mk
+/bin/
+/libqcs.so
