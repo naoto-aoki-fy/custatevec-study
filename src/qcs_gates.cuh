@@ -51,7 +51,7 @@ void prepare_swap(qcs_simulator& s) {
         phase(s.comm,[&] {
             DeviceScope device(s.device);
             check_cuda(cudaStreamCreateWithFlags(&s.transfer_stream,cudaStreamNonBlocking));
-            check_cuda(cudaEventCreateWithFlags(&s.swap_event,cudaEventDisableTiming));
+            check_cuda(cudaEventCreateWithFlags(&s.swap_event,cudaEventDisableTiming | cudaEventBlockingSync));
         });
         phase(s.comm,[&] {
             // Do not skip a potentially collective communicator creation because

@@ -27,6 +27,11 @@ DeviceAssignment initialize_cuda_before_mpi() {
     std::fprintf(stderr, "[pre-MPI] local_rank_source=%s local_rank=%d visible_devices=%d visible_device=%d\n",
                  assignment.source.c_str(), assignment.local_rank, visible, assignment.device);
     check(cudaSetDevice(assignment.device), "cudaSetDevice");
+    // Host synchronization sleeps instead of spinning; preserve other device flags.
+    unsigned int device_flags = 0;
+    check(cudaGetDeviceFlags(&device_flags), "cudaGetDeviceFlags");
+    check(cudaSetDeviceFlags((device_flags & ~cudaDeviceScheduleMask) | cudaDeviceScheduleBlockingSync),
+          "cudaSetDeviceFlags");
     check(cudaFree(nullptr), "cudaFree(nullptr): initialize assigned CUDA context");
     std::fprintf(stderr, "[pre-MPI] visible_device=%d context_initialization=succeeded\n", assignment.device);
     return assignment;
@@ -172,12 +177,12 @@ Runtime::Runtime(const Options& options, const Topology& t, const DeviceAssignme
         if (ipc_capable_) {
             std::string reason;
             ipc_capable_ = ipc_attempt(cudaEventCreateWithFlags(&event_,
-                cudaEventDisableTiming | cudaEventInterprocess), "cudaEventCreateWithFlags(IPC)", reason);
+                cudaEventDisableTiming | cudaEventInterprocess | cudaEventBlockingSync), "cudaEventCreateWithFlags(IPC)", reason);
             if (!ipc_capable_)
                 std::cerr << "rank=" << t.rank << " P2P event unavailable: " << reason << '\n';
         }
         if (!ipc_capable_)
-            CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventDisableTiming));
+            CUDA_TRY(cudaEventCreateWithFlags(&event_, cudaEventDisableTiming | cudaEventBlockingSync));
         SV_TRY(custatevecSVSwapWorkerCreate(handle, &worker_, communicator_, state, t.rank,
                                             event_, CUDA_C_64F, transfer_stream_, &swap_extra_bytes_, &minimum_transfer_));
         allocate(&swap_extra_, swap_extra_bytes_, "cuStateVec swap workspace");

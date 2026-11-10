@@ -176,7 +176,12 @@ qcs_simulator* qcs_simulator_create_cxx() {
         check_cuda(cudaGetDevice(&previous));
         int visible = 0; check_cuda(cudaGetDeviceCount(&visible));
         assignment = bench::device_assignment::discover(visible, [](const char* name) { return std::getenv(name); });
-        check_cuda(cudaSetDevice(assignment.device)); check_cuda(cudaFree(nullptr));
+        check_cuda(cudaSetDevice(assignment.device));
+        // Host synchronization sleeps instead of spinning; preserve other device flags.
+        unsigned int device_flags = 0;
+        check_cuda(cudaGetDeviceFlags(&device_flags));
+        check_cuda(cudaSetDeviceFlags((device_flags & ~cudaDeviceScheduleMask) | cudaDeviceScheduleBlockingSync));
+        check_cuda(cudaFree(nullptr));
     } catch (const std::exception& e) { std::snprintf(early_error, sizeof(early_error), "%s", e.what()); }
     if (!started) { check_mpi(MPI_Init(nullptr, nullptr)); owns_mpi = true; }
     ++leases;

@@ -473,8 +473,8 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
     runtime.finalize_preparation();
     // Separate, timing-enabled events on this rank's already assigned GPU.
     cudaEvent_t start_event = nullptr, stop_event = nullptr;
-    CUDA_TRY(cudaEventCreate(&start_event));
-    CUDA_TRY(cudaEventCreate(&stop_event));
+    CUDA_TRY(cudaEventCreateWithFlags(&start_event, cudaEventBlockingSync));
+    CUDA_TRY(cudaEventCreateWithFlags(&stop_event, cudaEventBlockingSync));
     const auto one = [&](std::uint64_t repetition, bool measured, int iteration) {
         runtime.reset_mapping();
         job.initialize(runtime, options.seed, repetition);
