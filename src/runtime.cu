@@ -432,14 +432,14 @@ void Runtime::report_metadata(const Options& options, int device, const cudaDevi
                   << " nqubits=" << nqubits << " precision=complex128 compute=64F fusion=disabled"
                   << " communicator=" << options.communicator << " communicator_library="
                   << (options.communicator_library.empty() ? "loaded MPI library" : options.communicator_library)
-                  << "\ntiming_backend=CUDA events\ntiming_scope=complete operation and communication; device synchronization before stop;"
+                  << "\ntiming_backend=CUDA events\ntiming_scope=complete operation and communication; stop recorded before event synchronization;"
                   << " rank-local GPU event-marker elapsed (including intervening host/MPI waits);"
                   << " milliseconds converted to seconds and reduced with MPI_MAX after stop;"
                   << " allocation/initialization/output excluded; measurement probability preprocessing included\n";
     }
 }
 void Runtime::synchronize() {
-    // Covers every stream, including internal library work, before timer stop.
+    // Covers every stream during initialization, validation, and cleanup.
     CUDA_TRY(cudaDeviceSynchronize());
 }
 void Runtime::reset_mapping() {

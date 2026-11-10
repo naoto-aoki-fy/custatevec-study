@@ -170,8 +170,8 @@ For each measured repetition:
 3. Execute an MPI barrier before starting the timer.
 4. Record a timing-enabled start CUDA event on `Runtime::stream`.
 5. Execute the complete benchmark operation, including required communication.
-6. Complete all GPU work on every stream used by that rank and all required outstanding MPI operations.
-7. Record a stop CUDA event on `Runtime::stream`, wait with `cudaEventSynchronize`,
+6. Complete required outstanding MPI operations and order all GPU work on the compute stream (swaps finish their transfer stream before returning).
+7. Without a preceding device-wide wait, record a stop CUDA event on `Runtime::stream`, wait with `cudaEventSynchronize`,
    and obtain rank-local milliseconds with `cudaEventElapsedTime`; convert to seconds.
 8. Reduce elapsed times with `MPI_MAX` after the timed interval.
 
@@ -182,7 +182,7 @@ The timing backend is CUDA events: elapsed time between GPU event markers may
 include host submission gaps and MPI-related waits, not just active kernels.
 Record both markers on the explicit compute stream. The pre-start device wait
 excludes initialization; compute-before-transfer and transfer-before-compute swap
-waits plus the device-wide wait before recording stop cover all workload streams
+waits order transfer work before subsequent compute and the stop event
 without relying on default-stream behavior.
 
 Report the maximum rank-local elapsed time in seconds. Do not subtract timestamps from different ranks.
@@ -239,7 +239,7 @@ a CUDA stream wait alone does not complete arbitrary MPI requests. No extra
 MPI barrier is required per swap by that documented sequence.
 
 Both swap waits stay inside the timed Hadamard execute call. Synchronize
-the device before timing and before stopping; complete workload-owned MPI requests
+the device before timing, then record stop before waiting on that event; complete workload-owned MPI requests
 inside execute. Keep initialization and allocation outside timing and reduce
 rank-local CUDA event durations (converted to seconds) with MPI_MAX. All ranks must invoke the same
 collectives and swap schedule. During close, finish all GPU work and barrier

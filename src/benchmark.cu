@@ -482,11 +482,8 @@ void run_benchmark(Runtime& runtime, Job& job, const Options& options) {
         MPI_TRY(MPI_Barrier(MPI_COMM_WORLD));
         CUDA_TRY(cudaEventRecord(start_event, runtime.stream));
         const auto result = job.execute(runtime, options.seed, repetition);
-        runtime.synchronize();
-        // Keep the device-wide completion wait: it covers transfer/internal
-        // streams as well as compute. Swaps explicitly wait for compute before
-        // transfers and for transfers before subsequent compute submissions.
-        // Thus both markers bracket all work without default-stream ordering.
+        // Gate operations use runtime.stream; swaps finish transfer work before
+        // returning. Queue stop before waiting to avoid a post-execution host gap.
         CUDA_TRY(cudaEventRecord(stop_event, runtime.stream));
         CUDA_TRY(cudaEventSynchronize(stop_event));
         float elapsed_ms = 0.0f;

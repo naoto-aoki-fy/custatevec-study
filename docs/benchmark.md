@@ -245,7 +245,7 @@ Workloads implement `Job` in `include/bench.hpp` and are connected through
 `initialize` independently initializes each repetition; `execute` performs the
 whole operation and completes its MPI requests. The harness resets mapping,
 completes initialization, barriers, records a start CUDA event on the compute
-stream, executes the operation, synchronizes the whole GPU, then records a stop
+stream, executes the operation, then immediately records a stop
 CUDA event on the compute stream. It waits for stop with `cudaEventSynchronize`,
 reads milliseconds with `cudaEventElapsedTime`, converts to seconds, and reduces
 rank-local durations with MPI_MAX. The timing-enabled pair is created once per
@@ -459,8 +459,8 @@ rank-mass buffer are also allocated there. Workspace and total explicit GPU
 allocation sizes are reported to stderr. No application buffers or descriptors
 are allocated in `execute`, and probability results are recomputed each time.
 Probability computation, draw coordination, MPI communication, local
-measurement, global collapse, normalization, and final device synchronization
-all belong to the measured interval.
+measurement, global collapse, and normalization all belong to the measured
+interval. The stop event waits for the final work on the compute stream.
 
 Optional deterministic checks for the target environment, **not run** here:
 
@@ -856,6 +856,18 @@ remain deferred to the target environment; no toolchain availability was
 rechecked for this change.
 
 ## CUDA event timing validation
+
+The stop marker is now submitted immediately after `execute`, before waiting on
+that event. This applies to every job using the shared harness. The cuStateVec
+handle uses the same compute stream; distributed swaps complete transfer work
+before returning. Initialization still finishes before the start marker.
+The Hadamard order host test and `git diff --check` passed for this correction;
+`make` stopped because the required site `config.mk` is absent. GPU execution
+and numerical/timing validation remain unverified in this environment.
+Compared with qcs-v2, event placement is consistent, but host submission gaps
+can still fall between the markers. Matching gate order, precision, problem
+size, warm-ups, CUDA/cuStateVec versions, and GPU conditions remains necessary
+for timing comparisons; no qcs-v2 runtime comparison was performed here.
 
 The timing change passed host-only device assignment, transfer policy, Hadamard
 order and launch-script checks. This workspace has no nvcc, MPI launcher,
